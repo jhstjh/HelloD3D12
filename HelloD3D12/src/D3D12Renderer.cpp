@@ -7,6 +7,8 @@
 #include <Windows.h>
 
 #include <d3d12.h>
+#include <D3Dcompiler.h>
+#include <DirectXMath.h>
 #include <dxgi1_6.h>
 
 #include <wrl.h>
@@ -17,6 +19,7 @@
 #define LOG_ERROR(...) printf(__VA_ARGS__)
 
 using namespace Microsoft::WRL;
+using namespace DirectX;
 
 namespace HDX
 {
@@ -41,6 +44,10 @@ public:
     {
         mWidth = width;
         mHeight = height;
+        mAspectRatio = static_cast<float>(mWidth) / static_cast<float>(mHeight);
+
+        mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
+        mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
         if (!loadPipeline(hWnd))
         {
@@ -192,6 +199,97 @@ private:
 
     bool loadAssets()
     {
+        {
+            CD3DX12_ROOT_SIGNATURE_DESC rootSignatureDesc;
+            rootSignatureDesc.Init(0, nullptr, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT);
+
+            ComPtr<ID3DBlob> signature;
+            ComPtr<ID3DBlob> error;
+
+            if (FAILED(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error)))
+            {
+                LOG_ERROR("Failed to serialize root signature\n");
+                return false;
+            }
+
+            if (FAILED( mDevice->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&mRootSignature))))
+            {
+                LOG_ERROR("Failed to create root signature\n");
+                return false;
+            }
+        }
+
+        {
+            ComPtr<ID3DBlob> vertexShader;
+            ComPtr<ID3DBlob> pixelShader;
+
+#ifdef _DEBUG
+            UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
+#else
+            UINT compileFlags = 0;
+#endif
+            const char* shader =
+                "struct PSInput                                                    \n"
+                "{                                                                 \n"
+                "	float4 position : SV_POSITION;                                 \n"
+                "	float4 color : COLOR;                                          \n"
+                "};                                                                \n"
+                "                                                                  \n"
+                "PSInput VSMain(float4 position : POSITION, float4 color : COLOR)  \n"
+                "{                                                                 \n"
+                "	PSInput result;                                                \n"
+                "                                                                  \n"
+                "	result.position = position;                                    \n"
+                "	result.color = color;                                          \n"
+                "                                                                  \n"
+                "	return result;                                                 \n"
+                "}                                                                 \n"
+                "                                                                  \n"
+                "float4 PSMain(PSInput input) : SV_TARGET                          \n"
+                "{                                                                 \n"
+                "	return input.color;                                            \n"
+                "}                                                                 \n";
+
+            if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr)))
+            {
+                LOG_ERROR("Failed to create vertex shader\n");
+                return false;
+            }
+
+            if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr)))
+            {
+                LOG_ERROR("Failed to create vertex shader\n");
+                return false;
+            }
+
+            D3D12_INPUT_ELEMENT_DESC inputElementDescs[]
+            {
+                {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+                {"COLOR", 0, DXGI_FORMAT_R32G32B32A32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}
+            };
+
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};
+            psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
+            psoDesc.pRootSignature = mRootSignature.Get();
+            psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShader.Get());
+            psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShader.Get());
+            psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
+            psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+            psoDesc.DepthStencilState.DepthEnable = FALSE;
+            psoDesc.DepthStencilState.StencilEnable = FALSE;
+            psoDesc.SampleMask = UINT_MAX;
+            psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            psoDesc.NumRenderTargets = 1;
+            psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
+            psoDesc.SampleDesc.Count = 1;
+
+            if (FAILED(mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPipelineState))))
+            {
+                LOG_ERROR("Failed to create graphics pipeline state\n");
+                return false;
+            }
+        }
+
         if (FAILED(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator.Get(), nullptr, IID_PPV_ARGS(&mCommandList))))
         {
             LOG_ERROR("Failed to create command list\n");
@@ -202,6 +300,43 @@ private:
         {
             LOG_ERROR("Failed to close command list\n");
             return false;
+        }
+
+        {
+            Vertex triangleVertices[] =
+            {
+                { { 0.0f, 0.25f * mAspectRatio, 0.0f }, { 1.0f, 0.0f, 0.0f, 1.0f } },
+                { { 0.25f, -0.25f * mAspectRatio, 0.0f }, { 0.0f, 1.0f, 0.0f, 1.0f } },
+                { { -0.25f, -0.25f * mAspectRatio, 0.0f }, { 0.0f, 0.0f, 1.0f, 1.0f } }
+            };
+
+            const UINT vertexBufferSize = sizeof(triangleVertices);
+
+            if (FAILED(mDevice->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&mVertexBuffer))))
+            {
+                LOG_ERROR("Failed to create committed resource\n");
+                return false;
+            }
+
+            UINT8* pVertexDataBegin;
+            CD3DX12_RANGE readRange(0, 0);
+            if (FAILED(mVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin))))
+            {
+                LOG_ERROR("Failed to map vertex buffer data\n");
+                return false;
+            }
+            memcpy(pVertexDataBegin, triangleVertices, sizeof(triangleVertices));
+            mVertexBuffer->Unmap(0, nullptr);
+
+            mVertexBufferView.BufferLocation = mVertexBuffer->GetGPUVirtualAddress();
+            mVertexBufferView.StrideInBytes = sizeof(Vertex);
+            mVertexBufferView.SizeInBytes = vertexBufferSize;
         }
 
         if (FAILED(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence))))
@@ -217,6 +352,8 @@ private:
             LOG_ERROR("Failed to create fence event\n");
             return false;
         }
+
+        waitForPreviousFrame();
 
         return true;
     }
@@ -237,12 +374,20 @@ private:
             return;
         }
 
+        mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
+        mCommandList->RSSetViewports(1, &mViewport);
+        mCommandList->RSSetScissorRects(1, &mScissorRect);
+
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mRTVDescriptorSize);
+        mCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
 
         const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
         mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+        mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
+        mCommandList->DrawInstanced(3, 1, 0, 0);
 
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 
@@ -277,8 +422,18 @@ private:
 
     static const UINT FrameCount{ 2 };
 
+    struct Vertex
+    {
+        XMFLOAT3 position;
+        XMFLOAT4 color;
+    };
+
     uint32_t mWidth;
     uint32_t mHeight;
+    float mAspectRatio;
+
+    CD3DX12_VIEWPORT mViewport;
+    CD3DX12_RECT mScissorRect;
 
     ComPtr<ID3D12Device> mDevice;
     ComPtr<ID3D12CommandQueue> mCommandQueue;
@@ -289,6 +444,9 @@ private:
     ComPtr<ID3D12GraphicsCommandList> mCommandList;
     ComPtr<ID3D12PipelineState> mPipelineState;
     ComPtr<ID3D12Fence> mFence;
+    ComPtr<ID3D12RootSignature> mRootSignature;
+    ComPtr<ID3D12Resource> mVertexBuffer;
+    D3D12_VERTEX_BUFFER_VIEW mVertexBufferView;
 
     UINT mFrameIndex;
     UINT mRTVDescriptorSize;
@@ -308,6 +466,11 @@ Renderer& Renderer::getInstance()
 {
     assert(gInstance);
     return *gInstance;
+}
+
+bool Renderer::isCreated()
+{
+    return gInstance != nullptr;
 }
 
 }

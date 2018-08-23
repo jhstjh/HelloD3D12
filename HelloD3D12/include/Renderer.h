@@ -9,6 +9,7 @@ class Renderer
 public:
     static Renderer* create();
     static Renderer& getInstance();
+    static bool isCreated();
 
     virtual void release() = 0;
     virtual ~Renderer() {};
