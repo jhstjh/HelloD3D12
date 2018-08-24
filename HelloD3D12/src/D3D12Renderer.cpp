@@ -17,8 +17,8 @@
 #include "d3dx12.h"
 #include "Renderer.h"
 
+#ifdef _DEBUG
 #define LOG_ERROR(...) printf(__VA_ARGS__)
-
 #define HR_ERROR_CHECK_CALL(func, ret, ... ) \
         if (FAILED(func)) \
         {   \
@@ -26,6 +26,10 @@
             assert((#func) == "failed"); \
             return ret; \
         } 
+#else
+#define LOG_ERROR(...) void()
+#define HR_ERROR_CHECK_CALL(func, ret, ... ) func
+#endif
 
 using namespace Microsoft::WRL;
 using namespace DirectX;
@@ -183,6 +187,7 @@ private:
         }
 
         HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator)), false, "failed to create command allocator\n");
+        HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&mBundleAllocator)), false, "failed to create bundle allocator\n");
         return true;
     }
     
@@ -433,6 +438,15 @@ private:
         ID3D12CommandList* ppCommandLists[] = { mCommandList.Get() };
         mCommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
 
+        {
+            HR_ERROR_CHECK_CALL(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_BUNDLE, mBundleAllocator.Get(), mPipelineState.Get(), IID_PPV_ARGS(&mBundle)), false, "Failed to create bundle\n");
+            mBundle->SetGraphicsRootSignature(mRootSignature.Get());
+            mBundle->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            mBundle->IASetVertexBuffers(0, 1, &mVertexBufferView);
+            mBundle->DrawInstanced(3, 1, 0, 0);
+            HR_ERROR_CHECK_CALL(mBundle->Close(), false, "Failed to close bundle\n");
+        }
+
         HR_ERROR_CHECK_CALL(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)), false, "Failed to create fence\n");
 
         mFenceValue = 1;
@@ -469,9 +483,8 @@ private:
 
         const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
         mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-        mCommandList->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-        mCommandList->IASetVertexBuffers(0, 1, &mVertexBufferView);
-        mCommandList->DrawInstanced(3, 1, 0, 0);
+        
+        mCommandList->ExecuteBundle(mBundle.Get());
 
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 
@@ -526,6 +539,8 @@ private:
     ComPtr<ID3D12Resource> mVertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW mVertexBufferView;
     ComPtr<ID3D12Resource> mTexture;
+    ComPtr<ID3D12CommandAllocator> mBundleAllocator;
+    ComPtr<ID3D12GraphicsCommandList> mBundle;
 
     UINT mFrameIndex;
     UINT mRTVDescriptorSize;
