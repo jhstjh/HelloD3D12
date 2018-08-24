@@ -18,6 +18,14 @@
 
 #define LOG_ERROR(...) printf(__VA_ARGS__)
 
+#define HR_ERROR_CHECK_CALL(func, ret, ... ) \
+        if (FAILED(func)) \
+        {   \
+            LOG_ERROR(__VA_ARGS__); \
+            assert((#func) == "failed"); \
+            return ret; \
+        } 
+
 using namespace Microsoft::WRL;
 using namespace DirectX;
 
@@ -31,13 +39,21 @@ class D3D12RendererImpl : public Renderer
 public:
     void release() final
     {
-        waitForPreviousFrame();
-
-        CloseHandle(mFenceEvent);
+        if (mIsInitialized)
+        {
+            waitForPreviousFrame();
+            CloseHandle(mFenceEvent);
+            mIsInitialized = false;
+        }
 
         assert(gInstance == this);
         gInstance = nullptr;
         delete this;
+    }
+
+    bool isInitialized() const final
+    {
+        return mIsInitialized;
     }
 
     bool init(HWND hWnd, uint32_t width, uint32_t height) final
@@ -59,11 +75,17 @@ public:
             return false;
         }
 
+        mIsInitialized = true;
         return true;
     }
 
     void onRender() final
     {
+        if (!mIsInitialized)
+        {
+            return;
+        }
+
         populateCommandList();
 
         ID3D12CommandList* ppCommadLists[] = { mCommandList.Get() };
@@ -93,11 +115,7 @@ private:
 #endif
 
         ComPtr<IDXGIFactory4> factory;
-        if (FAILED(CreateDXGIFactory2(dxgiFactoryFlag, IID_PPV_ARGS(&factory))))
-        {
-            LOG_ERROR("Failed to create DXGI factory!\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(CreateDXGIFactory2(dxgiFactoryFlag, IID_PPV_ARGS(&factory)), false, "Failed to create DXGI factory!\n");
 
         ComPtr<IDXGIAdapter1> adapter = nullptr;
         for (UINT adapterIndex = 0; DXGI_ERROR_NOT_FOUND != factory->EnumAdapters1(adapterIndex, &adapter); ++adapterIndex)
@@ -116,21 +134,13 @@ private:
             }
         }
 
-        if (FAILED(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&mDevice))))
-        {
-            LOG_ERROR("Failed to create D3D12 Device!\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&mDevice)), false, "Failed to create D3D12 Device!\n");
 
         D3D12_COMMAND_QUEUE_DESC queueDesc {};
         queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
         queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
 
-        if (FAILED(mDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&mCommandQueue))))
-        {
-            LOG_ERROR("Failed to create command queue!\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(mDevice->CreateCommandQueue(&queueDesc, IID_PPV_ARGS(&mCommandQueue)), false, "Failed to create command queue!\n");
 
         DXGI_SWAP_CHAIN_DESC1 swapChainDesc{};
         swapChainDesc.BufferCount = FrameCount;
@@ -142,61 +152,33 @@ private:
         swapChainDesc.SampleDesc.Count = 1;
 
         ComPtr<IDXGISwapChain1> swapChain;
-        if (FAILED(factory->CreateSwapChainForHwnd(mCommandQueue.Get(), hWnd, &swapChainDesc, nullptr, nullptr, &swapChain)))
-        {
-            LOG_ERROR("Failed to create swap chain!\n");
-            return false;
-        }
-
-        if (FAILED(factory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER)))
-        {
-            LOG_ERROR("Failed to change windows association!\n");
-            return false;
-        }
-
-        if (FAILED(swapChain.As(&mSwapChain)))
-        {
-            LOG_ERROR("Failed to cast swap chain!\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(factory->CreateSwapChainForHwnd(mCommandQueue.Get(), hWnd, &swapChainDesc, nullptr, nullptr, &swapChain), false, "Failed to create swap chain!\n");
+        HR_ERROR_CHECK_CALL(factory->MakeWindowAssociation(hWnd, DXGI_MWA_NO_ALT_ENTER), false, "Failed to change windows association!\n");
+        HR_ERROR_CHECK_CALL(swapChain.As(&mSwapChain), false, "Failed to cast swap chain!\n");
 
         mFrameIndex = mSwapChain->GetCurrentBackBufferIndex();
-
 
         D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc{};
         rtvHeapDesc.NumDescriptors = FrameCount;
         rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
         rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
-        if (FAILED(mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRTVHeap))))
-        {
-            LOG_ERROR("Failed to create RTV heap!\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRTVHeap)), false, "Failed to create RTV heap!\n");
 
         mRTVDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
-
-        
+  
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVHeap->GetCPUDescriptorHandleForHeapStart());
         for (UINT n = 0; n < FrameCount; n++)
         {
-            if (FAILED(mSwapChain->GetBuffer(n, IID_PPV_ARGS(&mRenderTargets[n]))))
-            {
-                LOG_ERROR("Unabled to get buffer for render target %u\n", n);
-                return false;
-            }
+            HR_ERROR_CHECK_CALL(mSwapChain->GetBuffer(n, IID_PPV_ARGS(&mRenderTargets[n])), false, "Unabled to get buffer for render target %u\n", n);
+
             mDevice->CreateRenderTargetView(mRenderTargets[n].Get(), nullptr, rtvHandle);
             rtvHandle.Offset(1, mRTVDescriptorSize);
         }
 
-        if (FAILED(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator))))
-        {
-            LOG_ERROR("failed to create command allocator\n");
-            return false;
-        }
-
+        HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator)), false, "failed to create command allocator\n");
         return true;
     }
-
+    
     bool loadAssets()
     {
         {
@@ -206,17 +188,8 @@ private:
             ComPtr<ID3DBlob> signature;
             ComPtr<ID3DBlob> error;
 
-            if (FAILED(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error)))
-            {
-                LOG_ERROR("Failed to serialize root signature\n");
-                return false;
-            }
-
-            if (FAILED( mDevice->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&mRootSignature))))
-            {
-                LOG_ERROR("Failed to create root signature\n");
-                return false;
-            }
+            HR_ERROR_CHECK_CALL(D3D12SerializeRootSignature(&rootSignatureDesc, D3D_ROOT_SIGNATURE_VERSION_1, &signature, &error), false, "Failed to serialize root signature\n");
+            HR_ERROR_CHECK_CALL(mDevice->CreateRootSignature(0, signature->GetBufferPointer(), signature->GetBufferSize(), IID_PPV_ARGS(&mRootSignature)), false, "Failed to create root signature\n");
         }
 
         {
@@ -250,17 +223,8 @@ private:
                 "	return input.color;                                            \n"
                 "}                                                                 \n";
 
-            if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr)))
-            {
-                LOG_ERROR("Failed to create vertex shader\n");
-                return false;
-            }
-
-            if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr)))
-            {
-                LOG_ERROR("Failed to create vertex shader\n");
-                return false;
-            }
+            HR_ERROR_CHECK_CALL(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, nullptr), false, "Failed to create vertex shader\n");
+            HR_ERROR_CHECK_CALL(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, nullptr), false, "Failed to create pixel shader\n");
 
             D3D12_INPUT_ELEMENT_DESC inputElementDescs[]
             {
@@ -283,24 +247,11 @@ private:
             psoDesc.RTVFormats[0] = DXGI_FORMAT_R8G8B8A8_UNORM;
             psoDesc.SampleDesc.Count = 1;
 
-            if (FAILED(mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPipelineState))))
-            {
-                LOG_ERROR("Failed to create graphics pipeline state\n");
-                return false;
-            }
+            HR_ERROR_CHECK_CALL(mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPipelineState)), false, "Failed to create graphics pipeline state\n");
         }
 
-        if (FAILED(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator.Get(), nullptr, IID_PPV_ARGS(&mCommandList))))
-        {
-            LOG_ERROR("Failed to create command list\n");
-            return false;
-        }
-
-        if (FAILED(mCommandList->Close()))
-        {
-            LOG_ERROR("Failed to close command list\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator.Get(), nullptr, IID_PPV_ARGS(&mCommandList)), false, "Failed to create command list\n");
+        HR_ERROR_CHECK_CALL(mCommandList->Close(), false, "Failed to close command list\n");
 
         {
             Vertex triangleVertices[] =
@@ -312,25 +263,19 @@ private:
 
             const UINT vertexBufferSize = sizeof(triangleVertices);
 
-            if (FAILED(mDevice->CreateCommittedResource(
+            HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
                 &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
                 D3D12_HEAP_FLAG_NONE,
                 &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
                 D3D12_RESOURCE_STATE_GENERIC_READ,
                 nullptr,
-                IID_PPV_ARGS(&mVertexBuffer))))
-            {
-                LOG_ERROR("Failed to create committed resource\n");
-                return false;
-            }
+                IID_PPV_ARGS(&mVertexBuffer)), 
+                false, "Failed to create committed resource\n");
 
             UINT8* pVertexDataBegin;
             CD3DX12_RANGE readRange(0, 0);
-            if (FAILED(mVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin))))
-            {
-                LOG_ERROR("Failed to map vertex buffer data\n");
-                return false;
-            }
+            HR_ERROR_CHECK_CALL(mVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin)), false, "Failed to map vertex buffer data\n");
+
             memcpy(pVertexDataBegin, triangleVertices, sizeof(triangleVertices));
             mVertexBuffer->Unmap(0, nullptr);
 
@@ -339,11 +284,7 @@ private:
             mVertexBufferView.SizeInBytes = vertexBufferSize;
         }
 
-        if (FAILED(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence))))
-        {
-            LOG_ERROR("Failed to create fence\n");
-            return false;
-        }
+        HR_ERROR_CHECK_CALL(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)), false, "Failed to create fence\n");
 
         mFenceValue = 1;
         mFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
@@ -360,19 +301,8 @@ private:
 
     void populateCommandList()
     {
-        if (FAILED(mCommandAllocator->Reset()))
-        {
-            LOG_ERROR("Failed to reset command allocator\n");
-            assert(false);
-            return;
-        }
-
-        if (FAILED(mCommandList->Reset(mCommandAllocator.Get(), mPipelineState.Get())))
-        {
-            LOG_ERROR("Failed to reset command list\n");
-            assert(false);
-            return;
-        }
+        HR_ERROR_CHECK_CALL(mCommandAllocator->Reset(), void(), "Failed to reset command allocator\n");
+        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator.Get(), mPipelineState.Get()), void(), "Failed to reset command list\n");
 
         mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
         mCommandList->RSSetViewports(1, &mViewport);
@@ -391,29 +321,19 @@ private:
 
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
 
-        if (FAILED(mCommandList->Close()))
-        {
-            LOG_ERROR("Failed to close command list\n");
-            assert(false);
-            return;
-        }
+        HR_ERROR_CHECK_CALL(mCommandList->Close(), void(), "Failed to close command list\n");
     }
 
     void waitForPreviousFrame()
     {
         const UINT64 fence = mFenceValue;
-        if (FAILED(mCommandQueue->Signal(mFence.Get(), fence)))
-        {
-            assert(false);
-        }
+        HR_ERROR_CHECK_CALL(mCommandQueue->Signal(mFence.Get(), fence), void(), "Failed to signal command queue!\n");
+
         mFenceValue++;
 
         if (mFence->GetCompletedValue() < fence)
         {
-            if (FAILED(mFence->SetEventOnCompletion(fence, mFenceEvent)))
-            {
-                assert(false);
-            }
+            HR_ERROR_CHECK_CALL(mFence->SetEventOnCompletion(fence, mFenceEvent), void(), "Failed to set event on completion\n");
             WaitForSingleObject(mFenceEvent, INFINITE);
         }
 
@@ -453,6 +373,8 @@ private:
     UINT64 mFenceValue;
 
     HANDLE mFenceEvent;
+
+    bool mIsInitialized{ false };
 };
 
 Renderer* Renderer::create()
