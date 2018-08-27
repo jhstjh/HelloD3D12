@@ -47,6 +47,7 @@ public:
         if (mIsInitialized)
         {
             waitForPreviousFrame();
+			mConstantBuffer->Unmap(0, nullptr);
             CloseHandle(mFenceEvent);
             mIsInitialized = false;
         }
