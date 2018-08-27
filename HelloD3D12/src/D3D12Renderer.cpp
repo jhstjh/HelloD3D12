@@ -345,6 +345,7 @@ private:
 
         HR_ERROR_CHECK_CALL(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator[mFrameIndex].Get(), nullptr, IID_PPV_ARGS(&mCommandList)), false, "Failed to create command list\n");
 
+        ComPtr<ID3D12Resource> vertexBufferUploadHeap;
         {
             Vertex triangleVertices[] =
             {
@@ -356,20 +357,31 @@ private:
             const UINT vertexBufferSize = sizeof(triangleVertices);
 
             HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
-                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
                 D3D12_HEAP_FLAG_NONE,
                 &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
-                D3D12_RESOURCE_STATE_GENERIC_READ,
+                D3D12_RESOURCE_STATE_COPY_DEST,
                 nullptr,
                 IID_PPV_ARGS(&mVertexBuffer)), 
                 false, "Failed to create committed resource\n");
 
-            UINT8* pVertexDataBegin;
-            CD3DX12_RANGE readRange(0, 0);
-            HR_ERROR_CHECK_CALL(mVertexBuffer->Map(0, &readRange, reinterpret_cast<void**>(&pVertexDataBegin)), false, "Failed to map vertex buffer data\n");
+            const UINT64 vertexBufferUploadHeapSize = GetRequiredIntermediateSize(mVertexBuffer.Get(), 0, 1);
 
-            memcpy(pVertexDataBegin, triangleVertices, sizeof(triangleVertices));
-            mVertexBuffer->Unmap(0, nullptr);
+            HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferUploadHeapSize),
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&vertexBufferUploadHeap)), false, "Failed to create vertex buffer upload heap\n");
+
+            D3D12_SUBRESOURCE_DATA vertexData{};
+            vertexData.pData = triangleVertices;
+            vertexData.RowPitch = vertexBufferSize;
+            vertexData.SlicePitch = vertexData.RowPitch;
+
+            UpdateSubresources(mCommandList.Get(), mVertexBuffer.Get(), vertexBufferUploadHeap.Get(), 0, 0, 1, &vertexData);
+            mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mVertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
 
             mVertexBufferView.BufferLocation = mVertexBuffer->GetGPUVirtualAddress();
             mVertexBufferView.StrideInBytes = sizeof(Vertex);
@@ -560,8 +572,6 @@ private:
 
     void MoveToNextFrame()
     {
-        printf("%llu\n", mFenceValue[mFrameIndex]);
-
         const UINT64 currentFenceValue = mFenceValue[mFrameIndex];
         HR_ERROR_CHECK_CALL(mCommandQueue->Signal(mFence.Get(), currentFenceValue), void(), "Failed to signal command queue!\n");
 
