@@ -46,7 +46,7 @@ public:
     {
         if (mIsInitialized)
         {
-            waitForPreviousFrame();
+            waitForGPU();
 			mConstantBuffer->Unmap(0, nullptr);
             CloseHandle(mFenceEvent);
             mIsInitialized = false;
@@ -115,7 +115,7 @@ public:
             assert(false);
         }
 
-        waitForPreviousFrame();
+        MoveToNextFrame();
     }
 
 private:
@@ -199,9 +199,10 @@ private:
 
             mDevice->CreateRenderTargetView(mRenderTargets[n].Get(), nullptr, rtvHandle);
             rtvHandle.Offset(1, mRTVDescriptorSize);
+        
+            HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator[n])), false, "failed to create command allocator %u\n", n);
         }
 
-        HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator)), false, "failed to create command allocator\n");
         HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&mBundleAllocator)), false, "failed to create bundle allocator\n");
         return true;
     }
@@ -342,7 +343,7 @@ private:
             HR_ERROR_CHECK_CALL(mDevice->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&mPipelineState)), false, "Failed to create graphics pipeline state\n");
         }
 
-        HR_ERROR_CHECK_CALL(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator.Get(), nullptr, IID_PPV_ARGS(&mCommandList)), false, "Failed to create command list\n");
+        HR_ERROR_CHECK_CALL(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator[mFrameIndex].Get(), nullptr, IID_PPV_ARGS(&mCommandList)), false, "Failed to create command list\n");
 
         {
             Vertex triangleVertices[] =
@@ -498,9 +499,9 @@ private:
             HR_ERROR_CHECK_CALL(mBundle->Close(), false, "Failed to close bundle\n");
         }
 
-        HR_ERROR_CHECK_CALL(mDevice->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)), false, "Failed to create fence\n");
+        HR_ERROR_CHECK_CALL(mDevice->CreateFence(mFenceValue[mFrameIndex], D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)), false, "Failed to create fence\n");
 
-        mFenceValue = 1;
+        mFenceValue[mFrameIndex]++;
         mFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
         if (mFenceEvent == nullptr)
         {
@@ -508,15 +509,15 @@ private:
             return false;
         }
 
-        waitForPreviousFrame();
+        waitForGPU();
 
         return true;
     }
 
     void populateCommandList()
     {
-        HR_ERROR_CHECK_CALL(mCommandAllocator->Reset(), void(), "Failed to reset command allocator\n");
-        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator.Get(), mPipelineState.Get()), void(), "Failed to reset command list\n");
+        HR_ERROR_CHECK_CALL(mCommandAllocator[mFrameIndex]->Reset(), void(), "Failed to reset command allocator\n");
+        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator[mFrameIndex].Get(), mPipelineState.Get()), void(), "Failed to reset command list\n");
 
         mCommandList->SetGraphicsRootSignature(mRootSignature.Get());
 
@@ -547,20 +548,32 @@ private:
         HR_ERROR_CHECK_CALL(mCommandList->Close(), void(), "Failed to close command list\n");
     }
 
-    void waitForPreviousFrame()
+    void waitForGPU()
     {
-        const UINT64 fence = mFenceValue;
-        HR_ERROR_CHECK_CALL(mCommandQueue->Signal(mFence.Get(), fence), void(), "Failed to signal command queue!\n");
+        HR_ERROR_CHECK_CALL(mCommandQueue->Signal(mFence.Get(), mFenceValue[mFrameIndex]), void(), "Failed to signal command queue!\n");
 
-        mFenceValue++;
+        HR_ERROR_CHECK_CALL(mFence->SetEventOnCompletion(mFenceValue[mFrameIndex], mFenceEvent), void(), "Failed to set event on completion\n");
+        WaitForSingleObjectEx(mFenceEvent, INFINITE, FALSE);
 
-        if (mFence->GetCompletedValue() < fence)
-        {
-            HR_ERROR_CHECK_CALL(mFence->SetEventOnCompletion(fence, mFenceEvent), void(), "Failed to set event on completion\n");
-            WaitForSingleObject(mFenceEvent, INFINITE);
-        }
+        mFenceValue[mFrameIndex]++;
+    }
+
+    void MoveToNextFrame()
+    {
+        printf("%llu\n", mFenceValue[mFrameIndex]);
+
+        const UINT64 currentFenceValue = mFenceValue[mFrameIndex];
+        HR_ERROR_CHECK_CALL(mCommandQueue->Signal(mFence.Get(), currentFenceValue), void(), "Failed to signal command queue!\n");
 
         mFrameIndex = mSwapChain->GetCurrentBackBufferIndex();
+
+        if (mFence->GetCompletedValue() < mFenceValue[mFrameIndex])
+        {
+            HR_ERROR_CHECK_CALL(mFence->SetEventOnCompletion(mFenceValue[mFrameIndex], mFenceEvent), void(), "Failed to set event on completion\n");
+            WaitForSingleObjectEx(mFenceEvent, INFINITE, FALSE);
+        }
+
+        mFenceValue[mFrameIndex] = currentFenceValue + 1;
     }
 
     static const UINT FrameCount{ 2 };
@@ -592,7 +605,7 @@ private:
     ComPtr<ID3D12DescriptorHeap> mRTVHeap;
     ComPtr<ID3D12DescriptorHeap> mSRVCBVHeap;
     ComPtr<ID3D12Resource> mRenderTargets[FrameCount];
-    ComPtr<ID3D12CommandAllocator> mCommandAllocator;
+    ComPtr<ID3D12CommandAllocator> mCommandAllocator[FrameCount];
     ComPtr<ID3D12GraphicsCommandList> mCommandList;
     ComPtr<ID3D12PipelineState> mPipelineState;
     ComPtr<ID3D12Fence> mFence;
@@ -608,7 +621,7 @@ private:
     UINT mFrameIndex;
     UINT mRTVDescriptorSize;
     UINT mSRVCBVDescriptorSize;
-    UINT64 mFenceValue;
+    UINT64 mFenceValue[FrameCount]{};
 
     HANDLE mFenceEvent;
 
