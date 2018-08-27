@@ -158,12 +158,16 @@
     <Image Include="small.ico" />
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="include\Model.cpp" />
     <ClCompile Include="src\D3D12Renderer.cpp" />
     <ClCompile Include="src\HelloD3D12.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="include\d3d12Headers.h" />
     <ClInclude Include="include\d3dx12.h" />
     <ClInclude Include="include\HelloD3D12.h" />
+    <ClInclude Include="include\Helper.h" />
+    <ClInclude Include="include\Model.h" />
     <ClInclude Include="include\Renderer.h" />
     <ClInclude Include="include\targetver.h" />
     <ClInclude Include="Resource.h" />
