@@ -31,8 +31,6 @@
 #define HR_ERROR_CHECK_CALL(func, ret, ... ) func
 #endif
 
-#define CONSTANT_BUFFER 0
-
 using namespace Microsoft::WRL;
 using namespace DirectX;
 
@@ -93,7 +91,6 @@ public:
             return;
         }
 
-#if CONSTANT_BUFFER
         {
             const float translationSpeed = 0.005f;
             const float offsetBounds = 1.25f;
@@ -106,7 +103,6 @@ public:
 
             memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
         }
-#endif
 
         populateCommandList();
 
@@ -187,7 +183,7 @@ private:
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRTVHeap)), false, "Failed to create RTV heap!\n");
 
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-        srvHeapDesc.NumDescriptors = 1;
+        srvHeapDesc.NumDescriptors = 2;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVHeap)), false, "Failed to create SRV CBV heap!\n");
@@ -465,7 +461,6 @@ private:
             mDevice->CreateShaderResourceView(mTexture.Get(), &srvDesc, mSRVCBVHeap->GetCPUDescriptorHandleForHeapStart());
         }
 
-#if CONSTANT_BUFFER
         {
             HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
                 &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
@@ -482,14 +477,12 @@ private:
             CD3DX12_CPU_DESCRIPTOR_HANDLE cbvHandle(mSRVCBVHeap->GetCPUDescriptorHandleForHeapStart());
             cbvHandle.Offset(1, mSRVCBVDescriptorSize);
 
-
             mDevice->CreateConstantBufferView(&cbvDesc, cbvHandle);
 
             CD3DX12_RANGE readRange(0, 0);
             HR_ERROR_CHECK_CALL(mConstantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mCBVDataBegin)), false, "Faild to map constant buffer\n");
             memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
         }
-#endif
 
         HR_ERROR_CHECK_CALL(mCommandList->Close(), false, "Failed to close commandlist\n");
         ID3D12CommandList* ppCommandLists[] = { mCommandList.Get() };
@@ -531,10 +524,10 @@ private:
 
         mCommandList->SetGraphicsRootDescriptorTable(0, mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
 
-        // CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
-        // cbvHandle.Offset(1, mSRVCBVDescriptorSize);
-        // 
-        // mCommandList->SetGraphicsRootDescriptorTable(1, cbvHandle);
+        CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
+        cbvHandle.Offset(1, mSRVCBVDescriptorSize);
+        
+        mCommandList->SetGraphicsRootDescriptorTable(1, cbvHandle);
         mCommandList->RSSetViewports(1, &mViewport);
         mCommandList->RSSetScissorRects(1, &mScissorRect);
 
