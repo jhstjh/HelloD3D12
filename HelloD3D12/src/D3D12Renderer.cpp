@@ -47,9 +47,10 @@ public:
         mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
         mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
-        auto model = std::make_unique<Model>("chalet");
-        // auto model = std::make_unique<Model>("cube");
-        mModels.push_back(std::move(model));
+        auto modelChalet = std::make_unique<Model>("chalet", XMFLOAT3{0.f, 0.f, 0.f});
+        auto modelCube = std::make_unique<Model>("cube", XMFLOAT3{ 0.f, 0.f, 2.f });
+        mModels.push_back(std::move(modelChalet));
+        mModels.push_back(std::move(modelCube));
 
         mSimpleShader = std::make_unique<SimpleShader>();
 
@@ -164,7 +165,7 @@ private:
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDSVHeap)), false, "Failed to create DSV heap!\n");
 
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-        srvHeapDesc.NumDescriptors = 2;
+        srvHeapDesc.NumDescriptors = 2 * static_cast<UINT>(mModels.size());
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVHeap)), false, "Failed to create SRV CBV heap!\n");
@@ -242,6 +243,10 @@ private:
             heapOffset += 2 * mSRVCBVDescriptorSize;
         }
 
+        HR_ERROR_CHECK_CALL(mCommandList->Close(), false, "Failed to close commandlist\n");
+        ID3D12CommandList* ppCommandLists[] = { mCommandList.Get() };
+        mCommandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
+
         HR_ERROR_CHECK_CALL(mDevice->CreateFence(mFenceValue[mFrameIndex], D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&mFence)), false, "Failed to create fence\n");
 
         mFenceValue[mFrameIndex]++;
@@ -268,13 +273,8 @@ private:
 
         ID3D12DescriptorHeap* ppHeaps[] = { mSRVCBVHeap.Get() };
         mCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+      
 
-        mCommandList->SetGraphicsRootDescriptorTable(0, mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
-
-        CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
-        cbvHandle.Offset(1, mSRVCBVDescriptorSize);
-        
-        mCommandList->SetGraphicsRootDescriptorTable(1, cbvHandle);
         mCommandList->RSSetViewports(1, &mViewport);
         mCommandList->RSSetScissorRects(1, &mScissorRect);
 
@@ -289,9 +289,18 @@ private:
         mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
         mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
+        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
+        CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
+        cbvHandle.Offset(1, mSRVCBVDescriptorSize);
         for (auto const& model : mModels)
         {
+            mCommandList->SetGraphicsRootDescriptorTable(0, srvHandle);
+            mCommandList->SetGraphicsRootDescriptorTable(1, cbvHandle);
+
             mCommandList->ExecuteBundle(model->getBundle().Get());
+
+            srvHandle.Offset(1, 2 * mSRVCBVDescriptorSize);
+            cbvHandle.Offset(1, 2 * mSRVCBVDescriptorSize);
         }
 
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));

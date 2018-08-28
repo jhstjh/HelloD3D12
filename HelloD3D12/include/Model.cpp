@@ -28,8 +28,9 @@ public:
 namespace HDX
 {
 
-Model::Model(std::string name)
+Model::Model(std::string name, const XMFLOAT3& position)
     : mFilename(name)
+    , mPosition(position)
 {
 }
 
@@ -234,7 +235,7 @@ bool Model::prepare(
         srvDesc.Format = textureDesc.Format;
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
-        device->CreateShaderResourceView(mTexture.Get(), &srvDesc, srvCBVHeap->GetCPUDescriptorHandleForHeapStart());
+        device->CreateShaderResourceView(mTexture.Get(), &srvDesc, srvCBVHandle);
 
         stbi_image_free(pixels);
     }
@@ -259,7 +260,7 @@ bool Model::prepare(
         CD3DX12_RANGE readRange(0, 0);
         HR_ERROR_CHECK_CALL(mConstantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mCBVDataBegin)), false, "Faild to map constant buffer\n");
         
-        XMMATRIX modelMtx = XMMatrixIdentity();
+        XMMATRIX modelMtx = XMMatrixTranslation(mPosition.x, mPosition.y, mPosition.z);
         mViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
         mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
         
@@ -269,10 +270,6 @@ bool Model::prepare(
         memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
     }
 
-    HR_ERROR_CHECK_CALL(commandList->Close(), false, "Failed to close commandlist\n");
-    ID3D12CommandList* ppCommandLists[] = { commandList };
-    commandQueue->ExecuteCommandLists(_countof(ppCommandLists), ppCommandLists);
-
     {
         auto pipelineState = shader->getPipelineState().Get();
         auto rootSignature = shader->getRootSignature().Get();
@@ -281,7 +278,7 @@ bool Model::prepare(
         mBundle->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         mBundle->IASetVertexBuffers(0, 1, &mVertexBufferView);
         mBundle->IASetIndexBuffer(&mIndexBufferView);
-        mBundle->DrawInstanced(mIndices.size(), 1, 0, 0);
+        mBundle->DrawInstanced(static_cast<UINT>(mIndices.size()), 1, 0, 0);
         HR_ERROR_CHECK_CALL(mBundle->Close(), false, "Failed to close bundle\n");
     }
 
@@ -295,7 +292,8 @@ void Model::update()
     auto currentTime = std::chrono::high_resolution_clock::now();
     float time = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count() / 1000.0f;
 
-    XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f);
+    XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f); 
+    modelMtx *= XMMatrixTranslation(mPosition.x, mPosition.y, mPosition.z);
     XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
     XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
 

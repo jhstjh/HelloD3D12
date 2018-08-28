@@ -21,7 +21,7 @@ public:
         XMFLOAT3 normal;
     };
 
-    Model(std::string name);
+    Model(std::string name, const XMFLOAT3& position);
     ~Model();
 
     bool prepare(ID3D12Device* device,
@@ -50,6 +50,8 @@ private:
 
     XMMATRIX mViewMtx;
     XMMATRIX mProjMtx;
+
+    XMFLOAT3 mPosition;
 
     std::string mFilename;
 
