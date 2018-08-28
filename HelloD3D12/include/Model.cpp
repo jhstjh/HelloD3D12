@@ -11,6 +11,12 @@
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "ext/tiny_obj_loader.h"
 
+#pragma warning( push )  
+#pragma warning( disable : 4100 )  
+#define STB_IMAGE_IMPLEMENTATION
+#include "ext/stb_image.h"
+#pragma warning( pop )   
+
 template<typename CharT, typename TraitsT = std::char_traits<CharT> >
 class vectorwrapbuf : public std::basic_streambuf<CharT, TraitsT> {
 public:
@@ -174,11 +180,22 @@ bool Model::prepare(
     UINT srvCBVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     srvCBVHandle.Offset(1, mSRVCBVOffset);
     {
+        std::string texturePath = "textures/" + mFilename + ".jpg";
+        int32_t texWidth, texHeight, texChannels;
+        Asset texFile(texturePath, 0);
+        auto size = texFile.getLength();
+        std::vector<uint8_t> texData(size);
+        texFile.read(texData.data(), size);
+        texFile.close();
+
+        auto pixels = stbi_load_from_memory(texData.data(), size, &texWidth, &texHeight, &texChannels, STBI_rgb_alpha);
+        assert(pixels);
+
         D3D12_RESOURCE_DESC textureDesc{};
         textureDesc.MipLevels = 1;
         textureDesc.Format = DXGI_FORMAT_B8G8R8A8_UNORM;
-        textureDesc.Width = TextureWidth;
-        textureDesc.Height = TextureHeight;
+        textureDesc.Width = texWidth;
+        textureDesc.Height = texHeight;
         textureDesc.Flags = D3D12_RESOURCE_FLAG_NONE;
         textureDesc.DepthOrArraySize = 1;
         textureDesc.SampleDesc.Count = 1;
@@ -204,49 +221,10 @@ bool Model::prepare(
             IID_PPV_ARGS(&textureUploadHeap)), false, "Failed to create texture upload heap\n");
 
 
-        auto generateTexDataFunc = [this](std::vector<UINT8> &data)
-        {
-            const UINT rowPitch = TextureWidth * TexturePixelSize;
-            const UINT cellPitch = rowPitch >> 3;		// The width of a cell in the checkboard texture.
-            const UINT cellHeight = TextureWidth >> 3;	// The height of a cell in the checkerboard texture.
-            const UINT textureSize = rowPitch * TextureHeight;
-
-            data.resize(textureSize);
-            UINT8* pData = &data[0];
-
-            for (UINT n = 0; n < textureSize; n += TexturePixelSize)
-            {
-                UINT x = n % rowPitch;
-                UINT y = n / rowPitch;
-                UINT i = x / cellPitch;
-                UINT j = y / cellHeight;
-
-                if (i % 2 == j % 2)
-                {
-                    pData[n] = 0x00;		// R
-                    pData[n + 1] = 0x00;	// G
-                    pData[n + 2] = 0x00;	// B
-                    pData[n + 3] = 0xff;	// A
-                }
-                else
-                {
-                    pData[n] = 0xff;		// R
-                    pData[n + 1] = 0xff;	// G
-                    pData[n + 2] = 0xff;	// B
-                    pData[n + 3] = 0xff;	// A
-                }
-            }
-
-            return data;
-        };
-
-        std::vector<UINT8> texture;
-        generateTexDataFunc(texture);
-
         D3D12_SUBRESOURCE_DATA textureData{};
-        textureData.pData = texture.data();
-        textureData.RowPitch = TextureWidth * TexturePixelSize;
-        textureData.SlicePitch = textureData.RowPitch * TextureHeight;
+        textureData.pData = pixels;
+        textureData.RowPitch = texWidth * TexturePixelSize;
+        textureData.SlicePitch = textureData.RowPitch * texHeight;
 
         UpdateSubresources(commandList, mTexture.Get(), textureUploadHeap.Get(), 0, 0, 1, &textureData);
         commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mTexture.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
@@ -257,6 +235,8 @@ bool Model::prepare(
         srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
         srvDesc.Texture2D.MipLevels = 1;
         device->CreateShaderResourceView(mTexture.Get(), &srvDesc, srvCBVHeap->GetCPUDescriptorHandleForHeapStart());
+
+        stbi_image_free(pixels);
     }
 
     {
