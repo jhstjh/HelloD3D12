@@ -47,7 +47,8 @@ public:
         mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
         mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
-        auto model = std::make_unique<Model>();
+        // auto model = std::make_unique<Model>("chalet");
+        auto model = std::make_unique<Model>("cube");
         mModels.push_back(std::move(model));
 
         mSimpleShader = std::make_unique<SimpleShader>();

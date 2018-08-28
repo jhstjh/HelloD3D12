@@ -1,6 +1,7 @@
 #include "stdafx.h"
 
 #include "SimpleShader.h"
+#include "Model.h"
 
 namespace HDX
 {
@@ -68,24 +69,26 @@ bool SimpleShader::prepare(ID3D12Device* device)
         const char* shader =
             "cbuffer SceneConstantBuffer : register(b0)\n                      \n"
             "{                                                                 \n"
-            "   float4 offset;                                                 \n"
+            "   float4x4 gWorldViewProj;                                          \n"
             "}                                                                 \n"
             "                                                                  \n"
             "struct PSInput                                                    \n"
             "{                                                                 \n"
             "	float4 position : SV_POSITION;                                 \n"
             "	float2 uv : TEXCOORD;                                          \n"
+            "   float3 normal : NORMAL;                                        \n"
             "};                                                                \n"
             "                                                                  \n"
             "Texture2D g_texture : register(t0);                               \n"
             "SamplerState g_sampler : register(s0);                            \n"
             "                                                                  \n"
-            "PSInput VSMain(float4 position : POSITION, float2 uv : TEXCOORD)  \n"
+            "PSInput VSMain(float3 position : POSITION, float2 uv : TEXCOORD, float3 normal : NORMAL)  \n"
             "{                                                                 \n"
             "	PSInput result;                                                \n"
             "                                                                  \n"
-            "	result.position = position + offset;                           \n"
+            "	result.position = mul(float4(position, 1.0f), gWorldViewProj); \n"
             "	result.uv = uv;                                                \n"
+            "   result.normal = normal;                                        \n"
             "                                                                  \n"
             "	return result;                                                 \n"
             "}                                                                 \n"
@@ -120,7 +123,8 @@ bool SimpleShader::prepare(ID3D12Device* device)
         D3D12_INPUT_ELEMENT_DESC inputElementDescs[]
         {
             {"POSITION", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, 0, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
-            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, 12, D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}
+            {"TEXCOORD", 0, DXGI_FORMAT_R32G32_FLOAT, 0, offsetof(Model::Vertex, uv), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0},
+            {"NORMAL", 0, DXGI_FORMAT_R32G32B32_FLOAT, 0, offsetof(Model::Vertex, normal), D3D12_INPUT_CLASSIFICATION_PER_VERTEX_DATA, 0}
         };
 
         D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc{};

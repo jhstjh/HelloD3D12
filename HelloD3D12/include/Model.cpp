@@ -1,14 +1,29 @@
 #include "stdafx.h"
 
 #include <vector>
+#include <string>
+#include <chrono>
 
+#include "Asset.h"
 #include "Model.h"
 #include "SimpleShader.h"
+
+#define TINYOBJLOADER_IMPLEMENTATION
+#include "ext/tiny_obj_loader.h"
+
+template<typename CharT, typename TraitsT = std::char_traits<CharT> >
+class vectorwrapbuf : public std::basic_streambuf<CharT, TraitsT> {
+public:
+    vectorwrapbuf(std::vector<CharT> &vec) {
+        this->setg(vec.data(), vec.data(), vec.data() + vec.size());
+    }
+};
 
 namespace HDX
 {
 
-Model::Model()
+Model::Model(std::string name)
+    : mFilename(name)
 {
 }
 
@@ -33,45 +48,125 @@ bool Model::prepare(
     HR_ERROR_CHECK_CALL(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&mBundleAllocator)), false, "failed to create bundle allocator\n");
 
     {
-        Vertex triangleVertices[] =
         {
-            { { 0.0f, 0.25f * 16.f / 9.f, 0.0f }, { 0.5f, 0.0f } },
-            { { 0.25f, -0.25f * 16.f / 9.f, 0.0f }, { 1.f, 1.f } },
-            { { -0.25f, -0.25f * 16.f / 9.f, 0.0f }, { 0.f, 1.f } }
-        };
+            tinyobj::attrib_t attrib;
+            std::vector<tinyobj::shape_t> shapes;
+            std::vector<tinyobj::material_t> materials;
+            std::string err;
 
-        const UINT vertexBufferSize = sizeof(triangleVertices);
+            std::string modelPath = "models/" + mFilename + ".obj";
+            Asset obj(modelPath, 0);
+            auto size = obj.getLength();
+            std::vector<char> objData(size);
+            obj.read(objData.data(), size);
+            obj.close();
 
-        HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
-            D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
-            D3D12_RESOURCE_STATE_COPY_DEST,
-            nullptr,
-            IID_PPV_ARGS(&mVertexBuffer)),
-            false, "Failed to create committed resource\n");
+            vectorwrapbuf<char> databuf(objData);
+            std::istream is(&databuf);
 
-        const UINT64 vertexBufferUploadHeapSize = GetRequiredIntermediateSize(mVertexBuffer.Get(), 0, 1);
+            if (!tinyobj::LoadObj(&attrib, &shapes, &materials, &err, &is))
+            {
+                assert(false);
+            }
 
-        HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-            D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferUploadHeapSize),
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&vertexBufferUploadHeap)), false, "Failed to create vertex buffer upload heap\n");
+            for (const auto& shape : shapes)
+            {
+                for (const auto& index : shape.mesh.indices)
+                {
+                    Vertex vertex = {};
 
-        D3D12_SUBRESOURCE_DATA vertexData{};
-        vertexData.pData = triangleVertices;
-        vertexData.RowPitch = vertexBufferSize;
-        vertexData.SlicePitch = vertexData.RowPitch;
+                    vertex.pos = {
+                        attrib.vertices[3 * index.vertex_index + 0],
+                        attrib.vertices[3 * index.vertex_index + 1],
+                        attrib.vertices[3 * index.vertex_index + 2]
+                    };
 
-        UpdateSubresources(commandList, mVertexBuffer.Get(), vertexBufferUploadHeap.Get(), 0, 0, 1, &vertexData);
-        commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mVertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+                    vertex.uv = {
+                        attrib.texcoords[2 * index.texcoord_index + 0],
+                        1.0f - attrib.texcoords[2 * index.texcoord_index + 1]
+                    };
 
-        mVertexBufferView.BufferLocation = mVertexBuffer->GetGPUVirtualAddress();
-        mVertexBufferView.StrideInBytes = sizeof(Vertex);
-        mVertexBufferView.SizeInBytes = vertexBufferSize;
+                    vertex.normal = {
+                        attrib.normals[3 * index.normal_index + 0],
+                        attrib.normals[3 * index.normal_index + 1],
+                        attrib.normals[3 * index.normal_index + 2]
+                    };
+
+                    mVertices.push_back(vertex);
+                    mIndices.push_back(static_cast<uint32_t>(mIndices.size()));
+                }
+            }
+        }
+
+        {
+            const UINT vertexBufferSize = static_cast<UINT>(sizeof(Vertex) * mVertices.size());
+
+            HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferSize),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&mVertexBuffer)),
+                false, "Failed to create committed resource\n");
+
+            const UINT64 vertexBufferUploadHeapSize = GetRequiredIntermediateSize(mVertexBuffer.Get(), 0, 1);
+
+            HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(vertexBufferUploadHeapSize),
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&vertexBufferUploadHeap)), false, "Failed to create vertex buffer upload heap\n");
+
+            D3D12_SUBRESOURCE_DATA vertexData{};
+            vertexData.pData = mVertices.data();
+            vertexData.RowPitch = vertexBufferSize;
+            vertexData.SlicePitch = vertexData.RowPitch;
+
+            UpdateSubresources(commandList, mVertexBuffer.Get(), vertexBufferUploadHeap.Get(), 0, 0, 1, &vertexData);
+            commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mVertexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_VERTEX_AND_CONSTANT_BUFFER));
+
+            mVertexBufferView.BufferLocation = mVertexBuffer->GetGPUVirtualAddress();
+            mVertexBufferView.StrideInBytes = sizeof(Vertex);
+            mVertexBufferView.SizeInBytes = vertexBufferSize;
+        }
+
+        {
+            const UINT indexBufferSize = static_cast<UINT>(sizeof(uint32_t) * mIndices.size());
+
+            HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(indexBufferSize),
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&mIndexBuffer)),
+                false, "Failed to create committed resource\n");
+
+            const UINT64 indexBufferUploadHeapSize = GetRequiredIntermediateSize(mIndexBuffer.Get(), 0, 1);
+
+            HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(indexBufferUploadHeapSize),
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&indexBufferUploadHeap)), false, "Failed to create index buffer upload heap\n");
+
+            D3D12_SUBRESOURCE_DATA indexData{};
+            indexData.pData = mIndices.data();
+            indexData.RowPitch = indexBufferSize;
+            indexData.SlicePitch = indexData.RowPitch;
+
+            UpdateSubresources(commandList, mIndexBuffer.Get(), indexBufferUploadHeap.Get(), 0, 0, 1, &indexData);
+            commandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mIndexBuffer.Get(), D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_INDEX_BUFFER));
+
+            mIndexBufferView.BufferLocation = mIndexBuffer->GetGPUVirtualAddress();
+            mIndexBufferView.SizeInBytes = indexBufferSize;
+            mIndexBufferView.Format = DXGI_FORMAT_R32_UINT;
+        }
     }
 
 
@@ -183,6 +278,14 @@ bool Model::prepare(
 
         CD3DX12_RANGE readRange(0, 0);
         HR_ERROR_CHECK_CALL(mConstantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mCBVDataBegin)), false, "Faild to map constant buffer\n");
+        
+        XMMATRIX modelMtx = XMMatrixIdentity();
+        mViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
+        mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
+        
+        XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
+        XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
+
         memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
     }
 
@@ -197,7 +300,8 @@ bool Model::prepare(
         mBundle->SetGraphicsRootSignature(rootSignature);
         mBundle->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
         mBundle->IASetVertexBuffers(0, 1, &mVertexBufferView);
-        mBundle->DrawInstanced(3, 1, 0, 0);
+        mBundle->IASetIndexBuffer(&mIndexBufferView);
+        mBundle->DrawInstanced(mIndices.size(), 1, 0, 0);
         HR_ERROR_CHECK_CALL(mBundle->Close(), false, "Failed to close bundle\n");
     }
 
@@ -206,18 +310,16 @@ bool Model::prepare(
 
 void Model::update()
 {
-    const float translationSpeed = 0.005f;
-    const float offsetBounds = 1.25f;
+    static auto startTime = std::chrono::high_resolution_clock::now();
 
-    mConstantBufferData.offset.x += translationSpeed;
-    if (mConstantBufferData.offset.x > offsetBounds)
-    {
-        mConstantBufferData.offset.x = -offsetBounds;
-    }
+    auto currentTime = std::chrono::high_resolution_clock::now();
+    float time = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count() / 1000.0f;
+
+    XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f);
+    XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
+    XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
 
     memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
-
-
 }
 
 }
