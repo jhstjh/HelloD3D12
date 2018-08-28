@@ -47,8 +47,8 @@ public:
         mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
         mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
-        // auto model = std::make_unique<Model>("chalet");
-        auto model = std::make_unique<Model>("cube");
+        auto model = std::make_unique<Model>("chalet");
+        // auto model = std::make_unique<Model>("cube");
         mModels.push_back(std::move(model));
 
         mSimpleShader = std::make_unique<SimpleShader>();
@@ -157,6 +157,12 @@ private:
         rtvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&mRTVHeap)), false, "Failed to create RTV heap!\n");
 
+        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc{};
+        dsvHeapDesc.NumDescriptors = FrameCount;
+        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDSVHeap)), false, "Failed to create DSV heap!\n");
+
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
         srvHeapDesc.NumDescriptors = 2;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
@@ -164,15 +170,50 @@ private:
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVHeap)), false, "Failed to create SRV CBV heap!\n");
 
         mRTVDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
+        mDSVDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
         mSRVCBVDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVHeap->GetCPUDescriptorHandleForHeapStart());
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDSVHeap->GetCPUDescriptorHandleForHeapStart());
         for (UINT n = 0; n < FrameCount; n++)
         {
             HR_ERROR_CHECK_CALL(mSwapChain->GetBuffer(n, IID_PPV_ARGS(&mRenderTargets[n])), false, "Unabled to get buffer for render target %u\n", n);
 
             mDevice->CreateRenderTargetView(mRenderTargets[n].Get(), nullptr, rtvHandle);
+
+            {
+                CD3DX12_RESOURCE_DESC depthTexDesc{
+                    D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                    0,
+                    mWidth,
+                    mHeight,
+                    1,
+                    1,
+                    DXGI_FORMAT_D32_FLOAT,
+                    1,
+                    0,
+                    D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                    D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL | D3D12_RESOURCE_FLAG_DENY_SHADER_RESOURCE
+                };
+
+                D3D12_CLEAR_VALUE clearVal;
+                clearVal.Format = DXGI_FORMAT_D32_FLOAT;
+                clearVal.DepthStencil.Depth = 1.f;
+                clearVal.DepthStencil.Stencil = 0;
+
+                HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                    D3D12_HEAP_FLAG_NONE,
+                    &depthTexDesc,
+                    D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                    &clearVal,
+                    IID_PPV_ARGS(mDepthStencils[n].GetAddressOf())), false, "Failed to create depth buffer %d\n", n);
+            }
+                                 
+            mDevice->CreateDepthStencilView(mDepthStencils[n].Get(), nullptr, dsvHandle);
+
             rtvHandle.Offset(1, mRTVDescriptorSize);
+            dsvHandle.Offset(1, mDSVDescriptorSize);
         
             HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator[n])), false, "failed to create command allocator %u\n", n);
         }
@@ -240,11 +281,14 @@ private:
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
 
         CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mRTVDescriptorSize);
-        mCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDSVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mDSVDescriptorSize);
+
+        mCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
         const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
         mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-        
+        mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
         for (auto const& model : mModels)
         {
             mCommandList->ExecuteBundle(model->getBundle().Get());
@@ -294,14 +338,17 @@ private:
     ComPtr<ID3D12CommandQueue> mCommandQueue;
     ComPtr<IDXGISwapChain3> mSwapChain;
     ComPtr<ID3D12DescriptorHeap> mRTVHeap;
+    ComPtr<ID3D12DescriptorHeap> mDSVHeap;
     ComPtr<ID3D12DescriptorHeap> mSRVCBVHeap;
     ComPtr<ID3D12Resource> mRenderTargets[FrameCount];
+    ComPtr<ID3D12Resource> mDepthStencils[FrameCount];
     ComPtr<ID3D12CommandAllocator> mCommandAllocator[FrameCount];
     ComPtr<ID3D12GraphicsCommandList> mCommandList;
     ComPtr<ID3D12Fence> mFence;
 
     UINT mFrameIndex;
     UINT mRTVDescriptorSize;
+    UINT mDSVDescriptorSize;
     UINT mSRVCBVDescriptorSize;
     UINT64 mFenceValue[FrameCount]{};
 
