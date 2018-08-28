@@ -37,6 +37,9 @@
     <ClCompile Include="include\Model.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\SimpleShader.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\targetver.h">
@@ -61,6 +64,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\d3d12Headers.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\SimpleShader.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

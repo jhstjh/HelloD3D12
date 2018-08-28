@@ -1,11 +1,14 @@
 #pragma once
 
 #include "d3d12Headers.h"
+
 using namespace Microsoft::WRL;
 using namespace DirectX;
 
 namespace HDX
 {
+
+class SimpleShader;
 
 class Model
 {
@@ -17,12 +20,11 @@ public:
                  ID3D12CommandQueue*  commandQueue,
                  ID3D12GraphicsCommandList* commandList,
                  ID3D12DescriptorHeap* srvCBVHeap,
-                 UINT heapOffset
+                 UINT heapOffset,
+                 SimpleShader* shader
                  );
     void update();
 
-    const ComPtr<ID3D12PipelineState> &getPipelineState() { return mPipelineState; }
-    const ComPtr<ID3D12RootSignature> &getRootSignature() { return mRootSignature; }
     const ComPtr<ID3D12GraphicsCommandList> &getBundle() { return mBundle; }
 
 private:
@@ -41,8 +43,6 @@ private:
     static const UINT TextureHeight{ 256 };
     static const UINT TexturePixelSize{ 4 };
 
-    ComPtr<ID3D12PipelineState> mPipelineState;
-    ComPtr<ID3D12RootSignature> mRootSignature;
     ComPtr<ID3D12Resource> mVertexBuffer;
     D3D12_VERTEX_BUFFER_VIEW mVertexBufferView;
     ComPtr<ID3D12Resource> mTexture;

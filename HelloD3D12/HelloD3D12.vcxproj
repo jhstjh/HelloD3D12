@@ -161,6 +161,7 @@
     <ClCompile Include="include\Model.cpp" />
     <ClCompile Include="src\D3D12Renderer.cpp" />
     <ClCompile Include="src\HelloD3D12.cpp" />
+    <ClCompile Include="src\SimpleShader.cpp" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\d3d12Headers.h" />
@@ -169,6 +170,7 @@
     <ClInclude Include="include\Helper.h" />
     <ClInclude Include="include\Model.h" />
     <ClInclude Include="include\Renderer.h" />
+    <ClInclude Include="include\SimpleShader.h" />
     <ClInclude Include="include\targetver.h" />
     <ClInclude Include="Resource.h" />
   </ItemGroup>

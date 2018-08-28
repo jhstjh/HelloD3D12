@@ -6,6 +6,7 @@
 #include "Helper.h"
 
 #include "Model.h"
+#include "SimpleShader.h"
 
 using namespace Microsoft::WRL;
 using namespace DirectX;
@@ -48,6 +49,8 @@ public:
 
         auto model = std::make_unique<Model>();
         mModels.push_back(std::move(model));
+
+        mSimpleShader = std::make_unique<SimpleShader>();
 
         if (!loadPipeline(hWnd))
         {
@@ -180,10 +183,16 @@ private:
     {
         HR_ERROR_CHECK_CALL(mDevice->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_DIRECT, mCommandAllocator[mFrameIndex].Get(), nullptr, IID_PPV_ARGS(&mCommandList)), false, "Failed to create command list\n");
 
+        if (mSimpleShader->prepare(mDevice.Get()) == false)
+        {
+            LOG_ERROR("Failed to prepare shader\n");
+            return false;
+        }
+
         UINT heapOffset = 0;
         for (auto const & model : mModels)
         {
-            if (!model->prepare(mDevice.Get(), mCommandQueue.Get(), mCommandList.Get(), mSRVCBVHeap.Get(), heapOffset))
+            if (!model->prepare(mDevice.Get(), mCommandQueue.Get(), mCommandList.Get(), mSRVCBVHeap.Get(), heapOffset, mSimpleShader.get()))
             {
                 LOG_ERROR("Failed to prepare model\n");
                 return false;
@@ -208,11 +217,12 @@ private:
 
     void populateCommandList()
     {
-        HR_ERROR_CHECK_CALL(mCommandAllocator[mFrameIndex]->Reset(), void(), "Failed to reset command allocator\n");
-        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator[mFrameIndex].Get(), nullptr), void(), "Failed to reset command list\n");
+        auto pipelineState = mSimpleShader->getPipelineState().Get();
 
-        mCommandList->SetGraphicsRootSignature(mModels[0]->getRootSignature().Get()); // TODO rootSignature and pipeline state lives with shader, not model
-        mCommandList->SetPipelineState(mModels[0]->getPipelineState().Get()); // TODO same above
+        HR_ERROR_CHECK_CALL(mCommandAllocator[mFrameIndex]->Reset(), void(), "Failed to reset command allocator\n");
+        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator[mFrameIndex].Get(), pipelineState), void(), "Failed to reset command list\n");
+
+        mCommandList->SetGraphicsRootSignature(mSimpleShader->getRootSignature().Get());
 
         ID3D12DescriptorHeap* ppHeaps[] = { mSRVCBVHeap.Get() };
         mCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
@@ -297,6 +307,8 @@ private:
     HANDLE mFenceEvent;
 
     std::vector<std::unique_ptr<Model>> mModels;
+    std::unique_ptr<SimpleShader> mSimpleShader;
+
     bool mIsInitialized{ false };
 };
 
