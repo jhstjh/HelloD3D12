@@ -40,6 +40,9 @@
     <ClCompile Include="src\SimpleShader.cpp">
       <Filter>Source Files</Filter>
     </ClCompile>
+    <ClCompile Include="src\stdafx.cpp">
+      <Filter>Source Files</Filter>
+    </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="include\targetver.h">
@@ -67,6 +70,9 @@
       <Filter>Header Files</Filter>
     </ClInclude>
     <ClInclude Include="include\SimpleShader.h">
+      <Filter>Header Files</Filter>
+    </ClInclude>
+    <ClInclude Include="include\stdafx.h">
       <Filter>Header Files</Filter>
     </ClInclude>
   </ItemGroup>

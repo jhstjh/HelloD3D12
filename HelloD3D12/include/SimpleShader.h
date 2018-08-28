@@ -1,5 +1,5 @@
 #pragma once
-#include "d3d12Headers.h"
+
 using namespace Microsoft::WRL;
 
 namespace HDX

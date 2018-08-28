@@ -1,9 +1,9 @@
+#include "stdafx.h"
+
 #include <assert.h>
 #include <memory>
 #include <vector>
-#include "d3d12Headers.h"
 #include "Renderer.h"
-#include "Helper.h"
 
 #include "Model.h"
 #include "SimpleShader.h"

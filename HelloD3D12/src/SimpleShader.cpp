@@ -1,5 +1,6 @@
+#include "stdafx.h"
+
 #include "SimpleShader.h"
-#include "Helper.h"
 
 namespace HDX
 {

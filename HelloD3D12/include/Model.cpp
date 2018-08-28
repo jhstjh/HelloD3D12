@@ -1,8 +1,8 @@
+#include "stdafx.h"
+
 #include <vector>
 
-#include "d3d12Headers.h"
 #include "Model.h"
-#include "Helper.h"
 #include "SimpleShader.h"
 
 namespace HDX
