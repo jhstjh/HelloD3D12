@@ -47,9 +47,11 @@ public:
         mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
         mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
+#ifndef _DEBUG
         auto modelChalet = std::make_unique<Model>("chalet", XMFLOAT3{0.f, 0.f, 0.f});
-        auto modelCube = std::make_unique<Model>("cube", XMFLOAT3{ 0.f, 0.f, 2.f });
         mModels.push_back(std::move(modelChalet));
+#endif
+        auto modelCube = std::make_unique<Model>("cube", XMFLOAT3{ 0.f, 0.f, 2.f });
         mModels.push_back(std::move(modelCube));
 
         mSimpleShader = std::make_unique<SimpleShader>();
@@ -129,6 +131,18 @@ private:
         }
 
         HR_ERROR_CHECK_CALL(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&mDevice)), false, "Failed to create D3D12 Device!\n");
+
+#ifdef _DEBUG
+        ComPtr<ID3D12InfoQueue> infoQueue;
+        if (SUCCEEDED(mDevice.As(&infoQueue)))
+        {
+            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+
+            // .. add filter
+        }
+#endif
 
         D3D12_COMMAND_QUEUE_DESC queueDesc {};
         queueDesc.Flags = D3D12_COMMAND_QUEUE_FLAG_NONE;
@@ -219,6 +233,19 @@ private:
             HR_ERROR_CHECK_CALL(mDevice->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_DIRECT, IID_PPV_ARGS(&mCommandAllocator[n])), false, "failed to create command allocator %u\n", n);
         }
 
+        {
+            HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(1024 * 60),
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&mConstantBuffer)), false, "Failed to create constant buffer!\n");
+
+            CD3DX12_RANGE readRange(0, 0);
+            HR_ERROR_CHECK_CALL(mConstantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mCBVDataBegin)), false, "Faild to map constant buffer\n");
+        }
+
         return true;
     }
     
@@ -233,14 +260,23 @@ private:
         }
 
         UINT heapOffset = 0;
+        UINT cbDataOffset = 0;
         for (auto const & model : mModels)
         {
-            if (!model->prepare(mDevice.Get(), mCommandQueue.Get(), mCommandList.Get(), mSRVCBVHeap.Get(), heapOffset, mSimpleShader.get()))
+            if (!model->prepare(
+                mDevice.Get(), 
+                mCommandQueue.Get(), 
+                mCommandList.Get(), 
+                mSRVCBVHeap.Get(), 
+                heapOffset, 
+                mSimpleShader.get(),
+                mConstantBuffer.Get(),
+                cbDataOffset,
+                mCBVDataBegin))
             {
                 LOG_ERROR("Failed to prepare model\n");
                 return false;
             }
-            heapOffset += 2 * mSRVCBVDescriptorSize;
         }
 
         HR_ERROR_CHECK_CALL(mCommandList->Close(), false, "Failed to close commandlist\n");
@@ -354,6 +390,9 @@ private:
     ComPtr<ID3D12CommandAllocator> mCommandAllocator[FrameCount];
     ComPtr<ID3D12GraphicsCommandList> mCommandList;
     ComPtr<ID3D12Fence> mFence;
+
+    ComPtr<ID3D12Resource> mConstantBuffer;
+    UINT8* mCBVDataBegin{ nullptr };
 
     UINT mFrameIndex;
     UINT mRTVDescriptorSize;

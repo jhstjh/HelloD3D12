@@ -36,10 +36,7 @@ Model::Model(std::string name, const XMFLOAT3& position)
 
 Model::~Model()
 {
-    if (mConstantBuffer)
-    {
-        mConstantBuffer->Unmap(0, nullptr);
-    }
+
 }
 
 bool Model::prepare(
@@ -47,11 +44,16 @@ bool Model::prepare(
     ID3D12CommandQueue*  commandQueue,
     ID3D12GraphicsCommandList* commandList,
     ID3D12DescriptorHeap* srvCBVHeap,
-    UINT heapOffset,
-    SimpleShader* shader
+    UINT &heapOffset,
+    SimpleShader* shader,
+    ID3D12Resource* constantBuffer,
+    UINT &constantBufferOffset,
+    UINT8* cbDataBegin
 )
 {
     mSRVCBVOffset = heapOffset;
+    mConstantBufferDataOffset = constantBufferOffset;
+    mCBVDataBegin = cbDataBegin;
     HR_ERROR_CHECK_CALL(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&mBundleAllocator)), false, "failed to create bundle allocator\n");
 
     {
@@ -180,6 +182,7 @@ bool Model::prepare(
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvCBVHandle(srvCBVHeap->GetCPUDescriptorHandleForHeapStart());
     UINT srvCBVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     srvCBVHandle.Offset(1, mSRVCBVOffset);
+    heapOffset += srvCBVDescriptorSize;
     {
         std::string texturePath = "textures/" + mFilename + ".jpg";
         int32_t texWidth, texHeight, texChannels;
@@ -241,33 +244,15 @@ bool Model::prepare(
     }
 
     {
-        HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
-            &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-            D3D12_HEAP_FLAG_NONE,
-            &CD3DX12_RESOURCE_DESC::Buffer(1024 * 64),
-            D3D12_RESOURCE_STATE_GENERIC_READ,
-            nullptr,
-            IID_PPV_ARGS(&mConstantBuffer)), false, "Failed to create constant buffer!\n");
-
         D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
-        cbvDesc.BufferLocation = mConstantBuffer->GetGPUVirtualAddress();
+        cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
         cbvDesc.SizeInBytes = (sizeof(SceneConstantBuffer) + 255) & ~255;
 
+        constantBufferOffset += cbvDesc.SizeInBytes;
         srvCBVHandle.Offset(1, srvCBVDescriptorSize);
+        heapOffset += srvCBVDescriptorSize;
 
         device->CreateConstantBufferView(&cbvDesc, srvCBVHandle);
-
-        CD3DX12_RANGE readRange(0, 0);
-        HR_ERROR_CHECK_CALL(mConstantBuffer->Map(0, &readRange, reinterpret_cast<void**>(&mCBVDataBegin)), false, "Faild to map constant buffer\n");
-        
-        XMMATRIX modelMtx = XMMatrixTranslation(mPosition.x, mPosition.y, mPosition.z);
-        mViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
-        mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
-        
-        XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
-        XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
-
-        memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
     }
 
     {
@@ -282,6 +267,9 @@ bool Model::prepare(
         HR_ERROR_CHECK_CALL(mBundle->Close(), false, "Failed to close bundle\n");
     }
 
+    mViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
+    mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
+
     return true;
 }
 
@@ -292,12 +280,12 @@ void Model::update()
     auto currentTime = std::chrono::high_resolution_clock::now();
     float time = std::chrono::duration_cast<std::chrono::milliseconds>(currentTime - startTime).count() / 1000.0f;
 
-    XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f); 
+    XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f * ((mConstantBufferDataOffset == 0) ? 1.f : -1.f));
     modelMtx *= XMMatrixTranslation(mPosition.x, mPosition.y, mPosition.z);
     XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
     XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
 
-    memcpy(mCBVDataBegin, &mConstantBufferData, sizeof(mConstantBufferData));
+    memcpy(mCBVDataBegin + mConstantBufferDataOffset, &mConstantBufferData, sizeof(mConstantBufferData));
 }
 
 }

@@ -28,8 +28,11 @@ public:
                  ID3D12CommandQueue*  commandQueue,
                  ID3D12GraphicsCommandList* commandList,
                  ID3D12DescriptorHeap* srvCBVHeap,
-                 UINT heapOffset,
-                 SimpleShader* shader
+                 UINT &heapOffset,
+                 SimpleShader* shader,
+                 ID3D12Resource* constantBuffer,
+                 UINT &constantBufferOffset,
+                 UINT8* cbDataBegin
                  );
     void update();
 
@@ -62,11 +65,10 @@ private:
     ComPtr<ID3D12Resource> mTexture;
     ComPtr<ID3D12CommandAllocator> mBundleAllocator;
     ComPtr<ID3D12GraphicsCommandList> mBundle;
-    ComPtr<ID3D12Resource> mConstantBuffer;
-    UINT8* mCBVDataBegin{ nullptr };
     SceneConstantBuffer mConstantBufferData{};
     UINT  mSRVCBVOffset{ 0 };
-
+    UINT  mConstantBufferDataOffset{ 0 };
+    UINT8* mCBVDataBegin{ nullptr };
 
     ComPtr<ID3D12Resource> vertexBufferUploadHeap;
     ComPtr<ID3D12Resource> indexBufferUploadHeap;
