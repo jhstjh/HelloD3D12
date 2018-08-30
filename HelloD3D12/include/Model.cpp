@@ -48,7 +48,8 @@ bool Model::prepare(
     SimpleShader* shader,
     ID3D12Resource* constantBuffer,
     UINT &constantBufferOffset,
-    UINT8* cbDataBegin
+    UINT8* cbDataBegin,
+    UINT frameCount
 )
 {
     mSRVCBVOffset = heapOffset;
@@ -182,6 +183,7 @@ bool Model::prepare(
     CD3DX12_CPU_DESCRIPTOR_HANDLE srvCBVHandle(srvCBVHeap->GetCPUDescriptorHandleForHeapStart());
     UINT srvCBVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     srvCBVHandle.Offset(1, mSRVCBVOffset);
+    mSRVDescriptorStart = srvCBVHandle;
     heapOffset += srvCBVDescriptorSize;
     {
         std::string texturePath = "textures/" + mFilename + ".jpg";
@@ -243,6 +245,7 @@ bool Model::prepare(
         stbi_image_free(pixels);
     }
 
+    for (UINT i = 0; i < frameCount; i++)
     {
         D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
         cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
@@ -253,6 +256,8 @@ bool Model::prepare(
         heapOffset += srvCBVDescriptorSize;
 
         device->CreateConstantBufferView(&cbvDesc, srvCBVHandle);
+
+        mCBVDescriptorStart.push_back(srvCBVHandle);
     }
 
     {
@@ -273,7 +278,7 @@ bool Model::prepare(
     return true;
 }
 
-void Model::update()
+void Model::update(UINT frameIndex)
 {
     static auto startTime = std::chrono::high_resolution_clock::now();
 
@@ -285,7 +290,27 @@ void Model::update()
     XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
     XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
 
-    memcpy(mCBVDataBegin + mConstantBufferDataOffset, &mConstantBufferData, sizeof(mConstantBufferData));
+    memcpy(mCBVDataBegin + mConstantBufferDataOffset + ((sizeof(SceneConstantBuffer) + 255) & ~255) * frameIndex, &mConstantBufferData, sizeof(mConstantBufferData));
+}
+
+void Model::updateDescriptors(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12DescriptorHeap* currentFrameHeap, uint32_t &offset, UINT frameIndex)
+{
+    UINT srvCBVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(currentFrameHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(currentFrameHeap->GetGPUDescriptorHandleForHeapStart());
+    cpuHandle.Offset(offset, srvCBVDescriptorSize);
+    gpuHandle.Offset(offset, srvCBVDescriptorSize);
+
+    device->CopyDescriptorsSimple(1, cpuHandle, mSRVDescriptorStart, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
+    cpuHandle.Offset(1, srvCBVDescriptorSize);
+    gpuHandle.Offset(1, srvCBVDescriptorSize);
+    offset++;
+
+    device->CopyDescriptorsSimple(1, cpuHandle, mCBVDescriptorStart[frameIndex], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cmdList->SetGraphicsRootDescriptorTable(1, gpuHandle);
+    gpuHandle.Offset(1, srvCBVDescriptorSize);
+    offset++;
 }
 
 }

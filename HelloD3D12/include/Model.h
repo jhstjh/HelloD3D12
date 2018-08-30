@@ -32,9 +32,11 @@ public:
                  SimpleShader* shader,
                  ID3D12Resource* constantBuffer,
                  UINT &constantBufferOffset,
-                 UINT8* cbDataBegin
+                 UINT8* cbDataBegin,
+                 UINT frameCount
                  );
-    void update();
+    void update(UINT frameIndex);
+    void updateDescriptors(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12DescriptorHeap* currentFrameHeap, uint32_t &offset, UINT frameIndex);
 
     const ComPtr<ID3D12GraphicsCommandList> &getBundle() { return mBundle; }
 
@@ -73,6 +75,10 @@ private:
     ComPtr<ID3D12Resource> vertexBufferUploadHeap;
     ComPtr<ID3D12Resource> indexBufferUploadHeap;
     ComPtr<ID3D12Resource> textureUploadHeap; // scope!! Don't destroy it before finishing execute command queue.
+
+    D3D12_CPU_DESCRIPTOR_HANDLE mSRVDescriptorStart;
+    std::vector<D3D12_CPU_DESCRIPTOR_HANDLE> mCBVDescriptorStart;
+
 };
 
 }

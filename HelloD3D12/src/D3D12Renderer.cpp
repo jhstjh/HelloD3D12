@@ -47,10 +47,15 @@ public:
         mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
         mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
+        auto modelChalet = std::make_unique<Model>(
 #ifndef _DEBUG
-        auto modelChalet = std::make_unique<Model>("chalet", XMFLOAT3{0.f, 0.f, 0.f});
-        mModels.push_back(std::move(modelChalet));
+        "chalet"
+#else      
+        "cube"
 #endif
+            , XMFLOAT3{ 0.f, 0.f, 0.f });
+        mModels.push_back(std::move(modelChalet));
+
         auto modelCube = std::make_unique<Model>("cube", XMFLOAT3{ 0.f, 0.f, 2.f });
         mModels.push_back(std::move(modelCube));
 
@@ -79,7 +84,7 @@ public:
 
         for (auto const& model : mModels)
         {
-            model->update();
+            model->update(mFrameIndex);
         }
 
         populateCommandList();
@@ -179,10 +184,19 @@ private:
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDSVHeap)), false, "Failed to create DSV heap!\n");
 
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-        srvHeapDesc.NumDescriptors = 2 * static_cast<UINT>(mModels.size());
+        srvHeapDesc.NumDescriptors = 3 * static_cast<UINT>(mModels.size());
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
-        srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+        srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVHeap)), false, "Failed to create SRV CBV heap!\n");
+
+        for (UINT i = 0; i < FrameCount; i++)
+        {
+            D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
+            srvHeapDesc.NumDescriptors = 2 * static_cast<UINT>(mModels.size()) * FrameCount;
+            srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
+            srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
+            HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVFrameHeap[i])), false, "Failed to create SRV CBV frame heap %u!\n", i);
+        }
 
         mRTVDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_RTV);
         mDSVDescriptorSize = mDevice->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_DSV);
@@ -272,7 +286,8 @@ private:
                 mSimpleShader.get(),
                 mConstantBuffer.Get(),
                 cbDataOffset,
-                mCBVDataBegin))
+                mCBVDataBegin,
+                FrameCount))
             {
                 LOG_ERROR("Failed to prepare model\n");
                 return false;
@@ -307,7 +322,7 @@ private:
 
         mCommandList->SetGraphicsRootSignature(mSimpleShader->getRootSignature().Get());
 
-        ID3D12DescriptorHeap* ppHeaps[] = { mSRVCBVHeap.Get() };
+        ID3D12DescriptorHeap* ppHeaps[] = { mSRVCBVFrameHeap[mFrameIndex].Get() };
         mCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
       
 
@@ -325,18 +340,11 @@ private:
         mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
         mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
-        CD3DX12_GPU_DESCRIPTOR_HANDLE srvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
-        CD3DX12_GPU_DESCRIPTOR_HANDLE cbvHandle(mSRVCBVHeap->GetGPUDescriptorHandleForHeapStart());
-        cbvHandle.Offset(1, mSRVCBVDescriptorSize);
+        uint32_t frameHeapOffset = 0;
         for (auto const& model : mModels)
         {
-            mCommandList->SetGraphicsRootDescriptorTable(0, srvHandle);
-            mCommandList->SetGraphicsRootDescriptorTable(1, cbvHandle);
-
+            model->updateDescriptors(mDevice.Get(), mCommandList.Get(), mSRVCBVFrameHeap[mFrameIndex].Get(), frameHeapOffset, mFrameIndex);
             mCommandList->ExecuteBundle(model->getBundle().Get());
-
-            srvHandle.Offset(1, 2 * mSRVCBVDescriptorSize);
-            cbvHandle.Offset(1, 2 * mSRVCBVDescriptorSize);
         }
 
         mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
@@ -385,6 +393,7 @@ private:
     ComPtr<ID3D12DescriptorHeap> mRTVHeap;
     ComPtr<ID3D12DescriptorHeap> mDSVHeap;
     ComPtr<ID3D12DescriptorHeap> mSRVCBVHeap;
+    ComPtr<ID3D12DescriptorHeap> mSRVCBVFrameHeap[FrameCount];
     ComPtr<ID3D12Resource> mRenderTargets[FrameCount];
     ComPtr<ID3D12Resource> mDepthStencils[FrameCount];
     ComPtr<ID3D12CommandAllocator> mCommandAllocator[FrameCount];
