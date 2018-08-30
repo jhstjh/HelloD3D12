@@ -7,6 +7,7 @@
 #include "Asset.h"
 #include "Model.h"
 #include "SimpleShader.h"
+#include "ShadowMap.h"
 
 #define TINYOBJLOADER_IMPLEMENTATION
 #include "ext/tiny_obj_loader.h"
@@ -46,14 +47,17 @@ bool Model::prepare(
     ID3D12DescriptorHeap* srvCBVHeap,
     UINT &heapOffset,
     SimpleShader* shader,
+    ShadowMap* shadowMap,
     ID3D12Resource* constantBuffer,
     UINT &constantBufferOffset,
     UINT8* cbDataBegin,
     UINT frameCount
 )
 {
+    mShadowMap = shadowMap;
     mSRVCBVOffset = heapOffset;
     mConstantBufferDataOffset = constantBufferOffset;
+    mShadowConstantBufferDataOffset = mConstantBufferDataOffset + frameCount * ConstantBufferSize;
     mCBVDataBegin = cbDataBegin;
     HR_ERROR_CHECK_CALL(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&mBundleAllocator)), false, "failed to create bundle allocator\n");
 
@@ -260,6 +264,21 @@ bool Model::prepare(
         mCBVDescriptorStart.push_back(srvCBVHandle);
     }
 
+    for (UINT i = 0; i < frameCount; i++)
+    {
+        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
+        cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
+        cbvDesc.SizeInBytes = (sizeof(SceneShadowConstantBuffer) + 255) & ~255;
+
+        constantBufferOffset += cbvDesc.SizeInBytes;
+        srvCBVHandle.Offset(1, srvCBVDescriptorSize);
+        heapOffset += srvCBVDescriptorSize;
+
+        device->CreateConstantBufferView(&cbvDesc, srvCBVHandle);
+
+        mShadowCBVDescriptorStart.push_back(srvCBVHandle);
+    }
+
     {
         auto pipelineState = shader->getPipelineState().Get();
         auto rootSignature = shader->getRootSignature().Get();
@@ -272,8 +291,22 @@ bool Model::prepare(
         HR_ERROR_CHECK_CALL(mBundle->Close(), false, "Failed to close bundle\n");
     }
 
-    mViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
+    {
+        auto pipelineState = shadowMap->getPipelineState().Get();
+        auto rootSignature = shadowMap->getRootSignature().Get();
+        HR_ERROR_CHECK_CALL(device->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_BUNDLE, mBundleAllocator.Get(), pipelineState, IID_PPV_ARGS(&mShadowBundle)), false, "Failed to create bundle\n");
+        mShadowBundle->SetGraphicsRootSignature(rootSignature);
+        mShadowBundle->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        mShadowBundle->IASetVertexBuffers(0, 1, &mVertexBufferView);
+        mShadowBundle->IASetIndexBuffer(&mIndexBufferView);
+        mShadowBundle->DrawInstanced(static_cast<UINT>(mIndices.size()), 1, 0, 0);
+        HR_ERROR_CHECK_CALL(mShadowBundle->Close(), false, "Failed to close bundle\n");
+    }
+
+    mViewMtx = XMMatrixLookAtLH({ 4.0f, 4.0f, 4.0f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
+    mShadowViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
     mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
+    mShadowProjMtx = XMMatrixOrthographicOffCenterLH(-10, 10, -10, 10, -10, 10);
 
     return true;
 }
@@ -287,10 +320,28 @@ void Model::update(UINT frameIndex)
 
     XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f * ((mConstantBufferDataOffset == 0) ? 1.f : -1.f));
     modelMtx *= XMMatrixTranslation(mPosition.x, mPosition.y, mPosition.z);
+    XMMATRIX modelViewProjShadow = modelMtx * mShadowViewMtx * mShadowProjMtx;
     XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
-    XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
 
-    memcpy(mCBVDataBegin + mConstantBufferDataOffset + ((sizeof(SceneConstantBuffer) + 255) & ~255) * frameIndex, &mConstantBufferData, sizeof(mConstantBufferData));
+    XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
+    XMStoreFloat4x4(&mShadowConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProjShadow));
+
+    memcpy(mCBVDataBegin + mConstantBufferDataOffset + ConstantBufferSize * frameIndex, &mConstantBufferData, sizeof(mConstantBufferData));
+    memcpy(mCBVDataBegin + mShadowConstantBufferDataOffset + ShadowConstantBufferSize * frameIndex, &mShadowConstantBufferData, sizeof(mShadowConstantBufferData));
+}
+
+void Model::updateShadowDescriptors(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12DescriptorHeap* currentFrameHeap, uint32_t &offset, UINT frameIndex)
+{
+    UINT srvCBVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    CD3DX12_CPU_DESCRIPTOR_HANDLE cpuHandle(currentFrameHeap->GetCPUDescriptorHandleForHeapStart());
+    CD3DX12_GPU_DESCRIPTOR_HANDLE gpuHandle(currentFrameHeap->GetGPUDescriptorHandleForHeapStart());
+    cpuHandle.Offset(offset, srvCBVDescriptorSize);
+    gpuHandle.Offset(offset, srvCBVDescriptorSize);
+
+    device->CopyDescriptorsSimple(1, cpuHandle, mShadowCBVDescriptorStart[frameIndex], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
+    gpuHandle.Offset(1, srvCBVDescriptorSize);
+    offset++;
 }
 
 void Model::updateDescriptors(ID3D12Device* device, ID3D12GraphicsCommandList* cmdList, ID3D12DescriptorHeap* currentFrameHeap, uint32_t &offset, UINT frameIndex)
@@ -309,6 +360,13 @@ void Model::updateDescriptors(ID3D12Device* device, ID3D12GraphicsCommandList* c
 
     device->CopyDescriptorsSimple(1, cpuHandle, mCBVDescriptorStart[frameIndex], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
     cmdList->SetGraphicsRootDescriptorTable(1, gpuHandle);
+    cpuHandle.Offset(1, srvCBVDescriptorSize);
+    gpuHandle.Offset(1, srvCBVDescriptorSize);
+    offset++;
+
+    device->CopyDescriptorsSimple(1, cpuHandle, mShadowMap->getSRVHandle(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    cmdList->SetGraphicsRootDescriptorTable(2, gpuHandle);
+    cpuHandle.Offset(1, srvCBVDescriptorSize);
     gpuHandle.Offset(1, srvCBVDescriptorSize);
     offset++;
 }

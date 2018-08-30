@@ -1,13 +1,80 @@
 #include "stdafx.h"
 
-#include "SimpleShader.h"
+#include <vector>
+
+#include "ShadowMap.h"
 #include "Model.h"
 
 namespace HDX
 {
 
-bool SimpleShader::prepare(ID3D12Device* device)
+
+
+
+
+
+bool ShadowMap::prepare(ID3D12Device * device, ID3D12CommandQueue * commandQueue, ID3D12GraphicsCommandList * commandList, ID3D12DescriptorHeap * srvCBVHeap, UINT & heapOffset, ID3D12Resource * constantBuffer, UINT & constantBufferOffset, UINT8 * cbDataBegin, UINT frameCount)
 {
+    // create depth texture
+    {
+        D3D12_DESCRIPTOR_HEAP_DESC dsvHeapDesc{};
+        dsvHeapDesc.NumDescriptors = frameCount;
+        dsvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_DSV;
+        dsvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
+        HR_ERROR_CHECK_CALL(device->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDSVHeap)), false, "Failed to create shadow DSV heap!\n");
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDSVHeap->GetCPUDescriptorHandleForHeapStart());
+        {
+            CD3DX12_RESOURCE_DESC depthTexDesc{
+                D3D12_RESOURCE_DIMENSION_TEXTURE2D,
+                0,
+                2048,
+                2048,
+                1,
+                1,
+                DXGI_FORMAT_R32_TYPELESS,
+                1,
+                0,
+                D3D12_TEXTURE_LAYOUT_UNKNOWN,
+                D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL
+            };
+
+            D3D12_CLEAR_VALUE clearVal;
+            clearVal.Format = DXGI_FORMAT_D32_FLOAT;
+            clearVal.DepthStencil.Depth = 1.f;
+            clearVal.DepthStencil.Stencil = 0;
+
+            HR_ERROR_CHECK_CALL(device->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                D3D12_HEAP_FLAG_NONE,
+                &depthTexDesc,
+                D3D12_RESOURCE_STATE_DEPTH_WRITE,
+                &clearVal,
+                IID_PPV_ARGS(mDepthTexture.GetAddressOf())), false, "Failed to create shadow texture\n");
+        }
+
+        D3D12_DEPTH_STENCIL_VIEW_DESC depthStencilViewDesc{};
+        depthStencilViewDesc.Format = DXGI_FORMAT_D32_FLOAT;
+        depthStencilViewDesc.ViewDimension = D3D12_DSV_DIMENSION_TEXTURE2D;
+        depthStencilViewDesc.Texture2D.MipSlice = 0;
+        device->CreateDepthStencilView(mDepthTexture.Get(), &depthStencilViewDesc, dsvHandle);
+
+        CD3DX12_CPU_DESCRIPTOR_HANDLE srvCBVHandle(srvCBVHeap->GetCPUDescriptorHandleForHeapStart());
+        UINT srvCBVDescriptorSize = device->GetDescriptorHandleIncrementSize(D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+        srvCBVHandle.Offset(1, heapOffset);
+        mSRVDescriptorStart = srvCBVHandle;
+
+        D3D12_SHADER_RESOURCE_VIEW_DESC srvDesc{};
+        srvDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+        srvDesc.Format = DXGI_FORMAT_R32_FLOAT;
+        srvDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+        srvDesc.Texture2D.MipLevels = 1;
+        device->CreateShaderResourceView(mDepthTexture.Get(), &srvDesc, srvCBVHandle);
+
+        heapOffset += srvCBVDescriptorSize;
+    }
+
+    // Create pipeline
     {
         D3D12_FEATURE_DATA_ROOT_SIGNATURE featureData{};
 
@@ -18,56 +85,21 @@ bool SimpleShader::prepare(ID3D12Device* device)
             featureData.HighestVersion = D3D_ROOT_SIGNATURE_VERSION_1_0;
         }
 
-        CD3DX12_DESCRIPTOR_RANGE1 ranges[3];
-        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
-        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
-        ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
+        CD3DX12_DESCRIPTOR_RANGE1 ranges[1];
+        ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
 
-        CD3DX12_ROOT_PARAMETER1 rootParameters[3];
-        rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_PIXEL);
-        rootParameters[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_VERTEX);
-        rootParameters[2].InitAsDescriptorTable(1, &ranges[2], D3D12_SHADER_VISIBILITY_PIXEL);
-
-        D3D12_STATIC_SAMPLER_DESC sampler{};
-        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        sampler.MipLODBias = 0;
-        sampler.MaxAnisotropy = 0;
-        sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-        sampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-        sampler.MinLOD = 0.f;
-        sampler.MaxLOD = D3D12_FLOAT32_MAX;
-        sampler.ShaderRegister = 0;
-        sampler.RegisterSpace = 0;
-        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
-
-        D3D12_STATIC_SAMPLER_DESC shadowSampler{};
-        shadowSampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
-        shadowSampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        shadowSampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        shadowSampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        shadowSampler.MipLODBias = 0;
-        shadowSampler.MaxAnisotropy = 0;
-        shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
-        shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
-        shadowSampler.MinLOD = 0.f;
-        shadowSampler.MaxLOD = 0.f;
-        shadowSampler.ShaderRegister = 0;
-        shadowSampler.RegisterSpace = 0;
-        shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        CD3DX12_ROOT_PARAMETER1 rootParameters[1];
+        rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_VERTEX);
 
         D3D12_ROOT_SIGNATURE_FLAGS rootSignatureFlags =
             D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT |
             D3D12_ROOT_SIGNATURE_FLAG_DENY_HULL_SHADER_ROOT_ACCESS |
             D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
-            D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
-
-        D3D12_STATIC_SAMPLER_DESC samplers[] = { sampler/*, shadowSampler*/ };
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS |
+            D3D12_ROOT_SIGNATURE_FLAG_DENY_PIXEL_SHADER_ROOT_ACCESS;
 
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
-        rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(samplers), samplers, rootSignatureFlags);
+        rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, 0, nullptr, rootSignatureFlags);
 
         ComPtr<ID3DBlob> signature;
         ComPtr<ID3DBlob> error;
@@ -78,7 +110,6 @@ bool SimpleShader::prepare(ID3D12Device* device)
 
     {
         ComPtr<ID3DBlob> vertexShader;
-        ComPtr<ID3DBlob> pixelShader;
         ComPtr<ID3DBlob> errorMsg;
 #ifdef _DEBUG
         UINT compileFlags = D3DCOMPILE_DEBUG | D3DCOMPILE_SKIP_OPTIMIZATION;
@@ -88,7 +119,7 @@ bool SimpleShader::prepare(ID3D12Device* device)
         const char* shader =
             "cbuffer SceneConstantBuffer : register(b0)\n                      \n"
             "{                                                                 \n"
-            "   float4x4 gWorldViewProj;                                          \n"
+            "   float4x4 gWorldViewProj;                                       \n"
             "}                                                                 \n"
             "                                                                  \n"
             "struct PSInput                                                    \n"
@@ -99,9 +130,7 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "};                                                                \n"
             "                                                                  \n"
             "Texture2D g_texture : register(t0);                               \n"
-            "Texture2D g_shadowtexture : register(t1);                         \n"
             "SamplerState g_sampler : register(s0);                            \n"
-            "SamplerState g_shadowSampler : register(s1);                      \n"
             "                                                                  \n"
             "PSInput VSMain(float3 position : POSITION, float2 uv : TEXCOORD, float3 normal : NORMAL)  \n"
             "{                                                                 \n"
@@ -112,25 +141,9 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "   result.normal = normal;                                        \n"
             "                                                                  \n"
             "	return result;                                                 \n"
-            "}                                                                 \n"
-            "                                                                  \n"
-            "float4 PSMain(PSInput input) : SV_TARGET                          \n"
-            "{                                                                 \n"
-            "	return g_texture.Sample(g_sampler, input.uv);                  \n"
             "}                                                                 \n";
 
         if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, &errorMsg)))
-        {
-            if (errorMsg)
-            {
-                LOG_ERROR(reinterpret_cast<const char*>(errorMsg->GetBufferPointer()));
-            }
-
-            assert(false);
-            return false;
-        }
-
-        if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "PSMain", "ps_5_0", compileFlags, 0, &pixelShader, &errorMsg)))
         {
             if (errorMsg)
             {
@@ -152,7 +165,6 @@ bool SimpleShader::prepare(ID3D12Device* device)
         psoDesc.InputLayout = { inputElementDescs, _countof(inputElementDescs) };
         psoDesc.pRootSignature = mRootSignature.Get();
         psoDesc.VS = CD3DX12_SHADER_BYTECODE(vertexShader.Get());
-        psoDesc.PS = CD3DX12_SHADER_BYTECODE(pixelShader.Get());
         psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
         psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
         psoDesc.DepthStencilState.DepthEnable = TRUE;
@@ -170,6 +182,14 @@ bool SimpleShader::prepare(ID3D12Device* device)
     }
 
     return true;
+}
+
+void ShadowMap::onRender(ID3D12GraphicsCommandList* cmdList)
+{
+    cmdList->SetGraphicsRootSignature(mRootSignature.Get());
+
+
+
 }
 
 }

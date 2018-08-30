@@ -7,6 +7,7 @@
 
 #include "Model.h"
 #include "SimpleShader.h"
+#include "ShadowMap.h"
 
 using namespace Microsoft::WRL;
 using namespace DirectX;
@@ -47,6 +48,9 @@ public:
         mViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, static_cast<float>(width), static_cast<float>(height));
         mScissorRect = CD3DX12_RECT(0, 0, static_cast<LONG>(width), static_cast<LONG>(height));
 
+        mShadowViewport = CD3DX12_VIEWPORT(0.0f, 0.0f, 2048.f, 2048.f);
+        mShadowScissorRect = CD3DX12_RECT(0, 0, 2048, 2048);
+
         auto modelChalet = std::make_unique<Model>(
 #ifndef _DEBUG
         "chalet"
@@ -60,6 +64,7 @@ public:
         mModels.push_back(std::move(modelCube));
 
         mSimpleShader = std::make_unique<SimpleShader>();
+        mShadowMap = std::make_unique<ShadowMap>();
 
         if (!loadPipeline(hWnd))
         {
@@ -87,9 +92,14 @@ public:
             model->update(mFrameIndex);
         }
 
-        populateCommandList();
+        HR_ERROR_CHECK_CALL(mCommandAllocator[mFrameIndex]->Reset(), void(), "Failed to reset command allocator\n");
 
+        uint32_t frameHeapOffset = 0;
+        populateShadowCommandList(frameHeapOffset);
         ID3D12CommandList* ppCommadLists[] = { mCommandList.Get() };
+        mCommandQueue->ExecuteCommandLists(_countof(ppCommadLists), ppCommadLists);
+
+        populateCommandList(frameHeapOffset);
         mCommandQueue->ExecuteCommandLists(_countof(ppCommadLists), ppCommadLists);
 
         if (FAILED(mSwapChain->Present(1, 0)))
@@ -107,12 +117,18 @@ private:
         UINT dxgiFactoryFlag{ 0 };
 
 #ifdef _DEBUG
+#pragma warning( push )  
+#pragma warning(disable:4996)
         ComPtr<ID3D12Debug> debugController;
         if (SUCCEEDED(D3D12GetDebugInterface(IID_PPV_ARGS(&debugController))))
         {
-            debugController->EnableDebugLayer();
-            dxgiFactoryFlag |= DXGI_CREATE_FACTORY_DEBUG;
+            if (!(getenv("NVTX_INJECTION64_PATH") || getenv("NSIGHT_LAUNCHED")))
+            {
+                debugController->EnableDebugLayer();
+                dxgiFactoryFlag |= DXGI_CREATE_FACTORY_DEBUG;
+            }
         }
+#pragma warning( pop )  
 #endif
 
         ComPtr<IDXGIFactory4> factory;
@@ -138,15 +154,20 @@ private:
         HR_ERROR_CHECK_CALL(D3D12CreateDevice(adapter.Get(), D3D_FEATURE_LEVEL_12_1, IID_PPV_ARGS(&mDevice)), false, "Failed to create D3D12 Device!\n");
 
 #ifdef _DEBUG
+#pragma warning( push )  
+#pragma warning(disable:4996)
         ComPtr<ID3D12InfoQueue> infoQueue;
         if (SUCCEEDED(mDevice.As(&infoQueue)))
         {
-            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
-            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
-            infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
-
+            if (!(getenv("NVTX_INJECTION64_PATH") || getenv("NSIGHT_LAUNCHED")))
+            {
+                infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+                infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+                infoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_WARNING, TRUE);
+            }
             // .. add filter
         }
+#pragma warning( pop )  
 #endif
 
         D3D12_COMMAND_QUEUE_DESC queueDesc {};
@@ -184,7 +205,7 @@ private:
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDSVHeap)), false, "Failed to create DSV heap!\n");
 
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-        srvHeapDesc.NumDescriptors = 3 * static_cast<UINT>(mModels.size());
+        srvHeapDesc.NumDescriptors = 32;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVHeap)), false, "Failed to create SRV CBV heap!\n");
@@ -192,7 +213,7 @@ private:
         for (UINT i = 0; i < FrameCount; i++)
         {
             D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-            srvHeapDesc.NumDescriptors = 2 * static_cast<UINT>(mModels.size()) * FrameCount;
+            srvHeapDesc.NumDescriptors = 32;
             srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
             HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVFrameHeap[i])), false, "Failed to create SRV CBV frame heap %u!\n", i);
@@ -275,15 +296,32 @@ private:
 
         UINT heapOffset = 0;
         UINT cbDataOffset = 0;
+
+        if (!mShadowMap->prepare(
+            mDevice.Get(),
+            mCommandQueue.Get(),
+            mCommandList.Get(),
+            mSRVCBVHeap.Get(),
+            heapOffset,
+            mConstantBuffer.Get(),
+            cbDataOffset,
+            mCBVDataBegin,
+            FrameCount))
+        {
+            LOG_ERROR("Failed to prepare shadowmap\n");
+            return false;
+        }
+
         for (auto const & model : mModels)
         {
             if (!model->prepare(
-                mDevice.Get(), 
-                mCommandQueue.Get(), 
-                mCommandList.Get(), 
-                mSRVCBVHeap.Get(), 
-                heapOffset, 
+                mDevice.Get(),
+                mCommandQueue.Get(),
+                mCommandList.Get(),
+                mSRVCBVHeap.Get(),
+                heapOffset,
                 mSimpleShader.get(),
+                mShadowMap.get(),
                 mConstantBuffer.Get(),
                 cbDataOffset,
                 mCBVDataBegin,
@@ -313,41 +351,70 @@ private:
         return true;
     }
 
-    void populateCommandList()
+    void populateShadowCommandList(uint32_t &frameHeapOffset)
     {
-        auto pipelineState = mSimpleShader->getPipelineState().Get();
-
-        HR_ERROR_CHECK_CALL(mCommandAllocator[mFrameIndex]->Reset(), void(), "Failed to reset command allocator\n");
-        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator[mFrameIndex].Get(), pipelineState), void(), "Failed to reset command list\n");
-
-        mCommandList->SetGraphicsRootSignature(mSimpleShader->getRootSignature().Get());
+        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator[mFrameIndex].Get(), nullptr), void(), "Failed to reset command list\n");
 
         ID3D12DescriptorHeap* ppHeaps[] = { mSRVCBVFrameHeap[mFrameIndex].Get() };
         mCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
-      
-
-        mCommandList->RSSetViewports(1, &mViewport);
-        mCommandList->RSSetScissorRects(1, &mScissorRect);
-
-        mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
-
-        CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mRTVDescriptorSize);
-        CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDSVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mDSVDescriptorSize);
-
-        mCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
-
-        const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
-        mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
-        mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
-
-        uint32_t frameHeapOffset = 0;
-        for (auto const& model : mModels)
         {
-            model->updateDescriptors(mDevice.Get(), mCommandList.Get(), mSRVCBVFrameHeap[mFrameIndex].Get(), frameHeapOffset, mFrameIndex);
-            mCommandList->ExecuteBundle(model->getBundle().Get());
+            auto pipelineState = mShadowMap->getPipelineState().Get();
+            mCommandList->SetPipelineState(pipelineState);
+            mCommandList->SetGraphicsRootSignature(mShadowMap->getRootSignature().Get());
+
+            mCommandList->RSSetViewports(1, &mShadowViewport);
+            mCommandList->RSSetScissorRects(1, &mShadowScissorRect);
+
+            CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mShadowMap->getDSVHeap()->GetCPUDescriptorHandleForHeapStart());
+            mCommandList->OMSetRenderTargets(0, nullptr, FALSE, &dsvHandle);
+            mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+
+            for (auto const& model : mModels)
+            {
+                model->updateShadowDescriptors(mDevice.Get(), mCommandList.Get(), mSRVCBVFrameHeap[mFrameIndex].Get(), frameHeapOffset, mFrameIndex);
+                mCommandList->ExecuteBundle(model->getShadowBundle().Get());
+            }
+
+            mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap->getDepthTexture().Get(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE));
         }
 
-        mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+        HR_ERROR_CHECK_CALL(mCommandList->Close(), void(), "Failed to close command list\n");
+    }
+
+    void populateCommandList(uint32_t &frameHeapOffset)
+    {
+        HR_ERROR_CHECK_CALL(mCommandList->Reset(mCommandAllocator[mFrameIndex].Get(), nullptr), void(), "Failed to reset command list\n");
+
+        ID3D12DescriptorHeap* ppHeaps[] = { mSRVCBVFrameHeap[mFrameIndex].Get() };
+        mCommandList->SetDescriptorHeaps(_countof(ppHeaps), ppHeaps);
+        {
+            auto pipelineState = mSimpleShader->getPipelineState().Get();
+            mCommandList->SetPipelineState(pipelineState);
+            mCommandList->SetGraphicsRootSignature(mSimpleShader->getRootSignature().Get());
+
+            mCommandList->RSSetViewports(1, &mViewport);
+            mCommandList->RSSetScissorRects(1, &mScissorRect);
+
+            mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET));
+
+            CD3DX12_CPU_DESCRIPTOR_HANDLE rtvHandle(mRTVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mRTVDescriptorSize);
+            CD3DX12_CPU_DESCRIPTOR_HANDLE dsvHandle(mDSVHeap->GetCPUDescriptorHandleForHeapStart(), mFrameIndex, mDSVDescriptorSize);
+
+            mCommandList->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+
+            const float clearColor[] = { 0.0f, 0.2f, 0.4f, 1.0f };
+            mCommandList->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
+            mCommandList->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
+            
+            for (auto const& model : mModels)
+            {
+                model->updateDescriptors(mDevice.Get(), mCommandList.Get(), mSRVCBVFrameHeap[mFrameIndex].Get(), frameHeapOffset, mFrameIndex);
+                mCommandList->ExecuteBundle(model->getBundle().Get());
+            }
+
+            mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mRenderTargets[mFrameIndex].Get(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT));
+            mCommandList->ResourceBarrier(1, &CD3DX12_RESOURCE_BARRIER::Transition(mShadowMap->getDepthTexture().Get(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE));
+        }
 
         HR_ERROR_CHECK_CALL(mCommandList->Close(), void(), "Failed to close command list\n");
     }
@@ -387,6 +454,9 @@ private:
     CD3DX12_VIEWPORT mViewport;
     CD3DX12_RECT mScissorRect;
 
+    CD3DX12_VIEWPORT mShadowViewport;
+    CD3DX12_RECT mShadowScissorRect;
+
     ComPtr<ID3D12Device> mDevice;
     ComPtr<ID3D12CommandQueue> mCommandQueue;
     ComPtr<IDXGISwapChain3> mSwapChain;
@@ -413,6 +483,7 @@ private:
 
     std::vector<std::unique_ptr<Model>> mModels;
     std::unique_ptr<SimpleShader> mSimpleShader;
+    std::unique_ptr<ShadowMap> mShadowMap;
 
     bool mIsInitialized{ false };
 };

@@ -97,6 +97,7 @@
     <ClCompile Include="src\Asset.cpp" />
     <ClCompile Include="src\D3D12Renderer.cpp" />
     <ClCompile Include="src\HelloD3D12.cpp" />
+    <ClCompile Include="src\ShadowMap.cpp" />
     <ClCompile Include="src\SimpleShader.cpp" />
     <ClCompile Include="src\stdafx.cpp">
       <PrecompiledHeader Condition="'$(Configuration)|$(Platform)'=='Debug|x64'">Create</PrecompiledHeader>
@@ -111,6 +112,7 @@
     <ClInclude Include="include\Helper.h" />
     <ClInclude Include="include\Model.h" />
     <ClInclude Include="include\Renderer.h" />
+    <ClInclude Include="include\ShadowMap.h" />
     <ClInclude Include="include\SimpleShader.h" />
     <ClInclude Include="include\stdafx.h" />
     <ClInclude Include="include\targetver.h" />
