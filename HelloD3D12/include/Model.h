@@ -25,6 +25,7 @@ public:
     struct SceneConstantBuffer
     {
         XMFLOAT4X4 worldViewProj;
+        XMFLOAT4X4 shadowWorldViewProj;
     };
 
     struct SceneShadowConstantBuffer

@@ -25,14 +25,14 @@ bool SimpleShader::prepare(ID3D12Device* device)
 
         CD3DX12_ROOT_PARAMETER1 rootParameters[3];
         rootParameters[0].InitAsDescriptorTable(1, &ranges[0], D3D12_SHADER_VISIBILITY_PIXEL);
-        rootParameters[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_VERTEX);
+        rootParameters[1].InitAsDescriptorTable(1, &ranges[1], D3D12_SHADER_VISIBILITY_ALL);
         rootParameters[2].InitAsDescriptorTable(1, &ranges[2], D3D12_SHADER_VISIBILITY_PIXEL);
 
         D3D12_STATIC_SAMPLER_DESC sampler{};
-        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_LINEAR;
-        sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
-        sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_BORDER;
+        sampler.Filter = D3D12_FILTER_MIN_MAG_MIP_POINT;
+        sampler.AddressU = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        sampler.AddressV = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
+        sampler.AddressW = D3D12_TEXTURE_ADDRESS_MODE_WRAP;
         sampler.MipLODBias = 0;
         sampler.MaxAnisotropy = 0;
         sampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
@@ -53,7 +53,7 @@ bool SimpleShader::prepare(ID3D12Device* device)
         shadowSampler.ComparisonFunc = D3D12_COMPARISON_FUNC_NEVER;
         shadowSampler.BorderColor = D3D12_STATIC_BORDER_COLOR_TRANSPARENT_BLACK;
         shadowSampler.MinLOD = 0.f;
-        shadowSampler.MaxLOD = 0.f;
+        shadowSampler.MaxLOD = D3D12_FLOAT32_MAX;
         shadowSampler.ShaderRegister = 0;
         shadowSampler.RegisterSpace = 0;
         shadowSampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
@@ -64,7 +64,7 @@ bool SimpleShader::prepare(ID3D12Device* device)
             D3D12_ROOT_SIGNATURE_FLAG_DENY_DOMAIN_SHADER_ROOT_ACCESS |
             D3D12_ROOT_SIGNATURE_FLAG_DENY_GEOMETRY_SHADER_ROOT_ACCESS;
 
-        D3D12_STATIC_SAMPLER_DESC samplers[] = { sampler/*, shadowSampler*/ };
+        D3D12_STATIC_SAMPLER_DESC samplers[] = { sampler };
 
         CD3DX12_VERSIONED_ROOT_SIGNATURE_DESC rootSignatureDesc;
         rootSignatureDesc.Init_1_1(_countof(rootParameters), rootParameters, _countof(samplers), samplers, rootSignatureFlags);
@@ -88,7 +88,8 @@ bool SimpleShader::prepare(ID3D12Device* device)
         const char* shader =
             "cbuffer SceneConstantBuffer : register(b0)\n                      \n"
             "{                                                                 \n"
-            "   float4x4 gWorldViewProj;                                          \n"
+            "   float4x4 gWorldViewProj;                                       \n"  
+            "   float4x4 gShadowWorldViewProj;                                 \n"
             "}                                                                 \n"
             "                                                                  \n"
             "struct PSInput                                                    \n"
@@ -96,12 +97,12 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "	float4 position : SV_POSITION;                                 \n"
             "	float2 uv : TEXCOORD;                                          \n"
             "   float3 normal : NORMAL;                                        \n"
+            "   float4 shadowPosition : POSITION;                              \n"
             "};                                                                \n"
             "                                                                  \n"
             "Texture2D g_texture : register(t0);                               \n"
             "Texture2D g_shadowtexture : register(t1);                         \n"
             "SamplerState g_sampler : register(s0);                            \n"
-            "SamplerState g_shadowSampler : register(s1);                      \n"
             "                                                                  \n"
             "PSInput VSMain(float3 position : POSITION, float2 uv : TEXCOORD, float3 normal : NORMAL)  \n"
             "{                                                                 \n"
@@ -110,14 +111,23 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "	result.position = mul(float4(position, 1.0f), gWorldViewProj); \n"
             "	result.uv = uv;                                                \n"
             "   result.normal = normal;                                        \n"
+            "   result.shadowPosition = mul(float4(position, 1.0f), gShadowWorldViewProj); \n                                                \n"
             "                                                                  \n"
             "	return result;                                                 \n"
             "}                                                                 \n"
             "                                                                  \n"
             "float4 PSMain(PSInput input) : SV_TARGET                          \n"
             "{                                                                 \n"
-            "	return g_texture.Sample(g_sampler, input.uv);                  \n"
-            "}                                                                 \n";
+            "    float4 shadowPos = input.shadowPosition;                      \n"
+            "    shadowPos.xyz /= shadowPos.w;                                 \n"
+            "    float2 shadowCoord = 0.5f * shadowPos.xy + 0.5f;              \n"
+            "    shadowCoord.y = 1.0f - shadowCoord.y;                         \n"
+            "    float shadowDepth = shadowPos.z - 0.0005f;                    \n"
+            "    float shadowMapDepth = g_shadowtexture.Sample(g_sampler, shadowCoord);  \n"
+            "    float shadowScale = shadowMapDepth > shadowDepth ? 1.f : 0.2f;\n"
+            "    return g_texture.Sample(g_sampler, input.uv) * shadowScale;   \n"
+            "}                                                                 \n"
+            ;
 
         if (FAILED(D3DCompile(shader, strlen(shader) + 1, nullptr, nullptr, nullptr, "VSMain", "vs_5_0", compileFlags, 0, &vertexShader, &errorMsg)))
         {

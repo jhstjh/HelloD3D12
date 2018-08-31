@@ -99,6 +99,8 @@ public:
         ID3D12CommandList* ppCommadLists[] = { mCommandList.Get() };
         mCommandQueue->ExecuteCommandLists(_countof(ppCommadLists), ppCommadLists);
 
+        insertGPUFence();
+
         populateCommandList(frameHeapOffset);
         mCommandQueue->ExecuteCommandLists(_countof(ppCommadLists), ppCommadLists);
 
@@ -417,6 +419,14 @@ private:
         }
 
         HR_ERROR_CHECK_CALL(mCommandList->Close(), void(), "Failed to close command list\n");
+    }
+
+    void insertGPUFence()
+    {
+        HR_ERROR_CHECK_CALL(mCommandQueue->Signal(mFence.Get(), mFenceValue[mFrameIndex]), void(), "Failed to signal command queue!\n");
+        HR_ERROR_CHECK_CALL(mCommandQueue->Wait(mFence.Get(), mFenceValue[mFrameIndex]), void(), "Failed to signal command queue!\n");
+
+        mFenceValue[mFrameIndex]++;
     }
 
     void waitForGPU()

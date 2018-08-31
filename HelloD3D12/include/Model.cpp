@@ -306,7 +306,7 @@ bool Model::prepare(
     mViewMtx = XMMatrixLookAtLH({ 4.0f, 4.0f, 4.0f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
     mShadowViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
     mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
-    mShadowProjMtx = XMMatrixOrthographicOffCenterLH(-10, 10, -10, 10, -10, 10);
+    mShadowProjMtx = XMMatrixOrthographicOffCenterLH(-5, 5, -5, 5, -5, 5);
 
     return true;
 }
@@ -324,6 +324,7 @@ void Model::update(UINT frameIndex)
     XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
 
     XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
+    XMStoreFloat4x4(&mConstantBufferData.shadowWorldViewProj, XMMatrixTranspose(modelViewProjShadow));
     XMStoreFloat4x4(&mShadowConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProjShadow));
 
     memcpy(mCBVDataBegin + mConstantBufferDataOffset + ConstantBufferSize * frameIndex, &mConstantBufferData, sizeof(mConstantBufferData));
