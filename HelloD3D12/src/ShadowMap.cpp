@@ -129,8 +129,6 @@ bool ShadowMap::prepare(ID3D12Device * device, ID3D12CommandQueue * commandQueue
             "   float3 normal : NORMAL;                                        \n"
             "};                                                                \n"
             "                                                                  \n"
-            "Texture2D g_texture : register(t0);                               \n"
-            "SamplerState g_sampler : register(s0);                            \n"
             "                                                                  \n"
             "PSInput VSMain(float3 position : POSITION, float2 uv : TEXCOORD, float3 normal : NORMAL)  \n"
             "{                                                                 \n"

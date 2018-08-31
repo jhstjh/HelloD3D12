@@ -25,7 +25,13 @@ public:
     struct SceneConstantBuffer
     {
         XMFLOAT4X4 worldViewProj;
-        XMFLOAT4X4 shadowWorldViewProj;
+        XMFLOAT4X4 world;
+    };
+
+    struct SceneStaticConstantBuffer
+    {
+        XMFLOAT4X4 shadowViewProj;
+        XMFLOAT3   lightDir;
     };
 
     struct SceneShadowConstantBuffer
@@ -34,6 +40,7 @@ public:
     };
 
     const UINT ConstantBufferSize = ((sizeof(SceneConstantBuffer) + 255) & ~255);
+    const UINT StaticConstantBufferSize = ((sizeof(SceneStaticConstantBuffer) + 255) & ~255);
     const UINT ShadowConstantBufferSize = ((sizeof(SceneShadowConstantBuffer) + 255) & ~255);
 
     Model(std::string name, const XMFLOAT3& position);
@@ -85,6 +92,7 @@ private:
     ComPtr<ID3D12GraphicsCommandList> mBundle;
     ComPtr<ID3D12GraphicsCommandList> mShadowBundle;
     SceneConstantBuffer mConstantBufferData{};
+    SceneStaticConstantBuffer mStaticConstantBufferData{};
     SceneShadowConstantBuffer mShadowConstantBufferData{};
     UINT  mSRVCBVOffset{ 0 };
     UINT  mConstantBufferDataOffset{ 0 };

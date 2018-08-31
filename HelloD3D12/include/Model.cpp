@@ -57,7 +57,7 @@ bool Model::prepare(
     mShadowMap = shadowMap;
     mSRVCBVOffset = heapOffset;
     mConstantBufferDataOffset = constantBufferOffset;
-    mShadowConstantBufferDataOffset = mConstantBufferDataOffset + frameCount * ConstantBufferSize;
+    mShadowConstantBufferDataOffset = mConstantBufferDataOffset + frameCount * (ConstantBufferSize + StaticConstantBufferSize);
     mCBVDataBegin = cbDataBegin;
     HR_ERROR_CHECK_CALL(device->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_BUNDLE, IID_PPV_ARGS(&mBundleAllocator)), false, "failed to create bundle allocator\n");
 
@@ -251,24 +251,38 @@ bool Model::prepare(
 
     for (UINT i = 0; i < frameCount; i++)
     {
-        D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
-        cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
-        cbvDesc.SizeInBytes = (sizeof(SceneConstantBuffer) + 255) & ~255;
+        {
+            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
+            cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
+            cbvDesc.SizeInBytes = ConstantBufferSize;
 
-        constantBufferOffset += cbvDesc.SizeInBytes;
-        srvCBVHandle.Offset(1, srvCBVDescriptorSize);
-        heapOffset += srvCBVDescriptorSize;
+            constantBufferOffset += cbvDesc.SizeInBytes;
+            srvCBVHandle.Offset(1, srvCBVDescriptorSize);
+            heapOffset += srvCBVDescriptorSize;
 
-        device->CreateConstantBufferView(&cbvDesc, srvCBVHandle);
+            device->CreateConstantBufferView(&cbvDesc, srvCBVHandle);
+        }
+        // only push this once. constant buffer and static constant buffer for one frame stays consecutively in the heap and will be bind together
+        mCBVDescriptorStart.push_back(srvCBVHandle); 
 
-        mCBVDescriptorStart.push_back(srvCBVHandle);
+        {
+            D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
+            cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
+            cbvDesc.SizeInBytes = StaticConstantBufferSize;
+
+            constantBufferOffset += cbvDesc.SizeInBytes;
+            srvCBVHandle.Offset(1, srvCBVDescriptorSize);
+            heapOffset += srvCBVDescriptorSize;
+
+            device->CreateConstantBufferView(&cbvDesc, srvCBVHandle);
+        }
     }
 
     for (UINT i = 0; i < frameCount; i++)
     {
         D3D12_CONSTANT_BUFFER_VIEW_DESC cbvDesc{};
         cbvDesc.BufferLocation = constantBuffer->GetGPUVirtualAddress() + constantBufferOffset;
-        cbvDesc.SizeInBytes = (sizeof(SceneShadowConstantBuffer) + 255) & ~255;
+        cbvDesc.SizeInBytes = ShadowConstantBufferSize;
 
         constantBufferOffset += cbvDesc.SizeInBytes;
         srvCBVHandle.Offset(1, srvCBVDescriptorSize);
@@ -306,7 +320,14 @@ bool Model::prepare(
     mViewMtx = XMMatrixLookAtLH({ 4.0f, 4.0f, 4.0f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
     mShadowViewMtx = XMMatrixLookAtLH({ 2.f, 2.f, -2.f }, { 0.f, 0.f, 0.f }, { 0.f, 1.f, 0.f });
     mProjMtx = XMMatrixPerspectiveFovLH((45.0f) / 180.f * 3.1415926f, 16.f / 9.f, 0.1f, 10.f);
-    mShadowProjMtx = XMMatrixOrthographicOffCenterLH(-5, 5, -5, 5, -5, 5);
+    mShadowProjMtx = XMMatrixOrthographicOffCenterLH(-5, 5, -5, 5, -5, 10);
+    XMMATRIX ViewProjShadow = mShadowViewMtx * mShadowProjMtx;
+
+    XMStoreFloat3(&mStaticConstantBufferData.lightDir, XMVector3Normalize({ -2.f, -2.f, 2.f }));
+    XMStoreFloat4x4(&mStaticConstantBufferData.shadowViewProj, XMMatrixTranspose(ViewProjShadow));
+
+    memcpy(mCBVDataBegin + mConstantBufferDataOffset + ConstantBufferSize, &mStaticConstantBufferData, sizeof(mStaticConstantBufferData));
+    memcpy(mCBVDataBegin + mConstantBufferDataOffset + ConstantBufferSize + StaticConstantBufferSize + ConstantBufferSize, &mStaticConstantBufferData, sizeof(mStaticConstantBufferData));
 
     return true;
 }
@@ -320,14 +341,14 @@ void Model::update(UINT frameIndex)
 
     XMMATRIX modelMtx = XMMatrixRotationY(time * 90.f / 180.f * 3.1415926f * ((mConstantBufferDataOffset == 0) ? 1.f : -1.f));
     modelMtx *= XMMatrixTranslation(mPosition.x, mPosition.y, mPosition.z);
-    XMMATRIX modelViewProjShadow = modelMtx * mShadowViewMtx * mShadowProjMtx;
     XMMATRIX modelViewProj = modelMtx * mViewMtx * mProjMtx;
+    XMMATRIX modelViewProjShadow = modelMtx * mShadowViewMtx * mShadowProjMtx;
 
     XMStoreFloat4x4(&mConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProj));
-    XMStoreFloat4x4(&mConstantBufferData.shadowWorldViewProj, XMMatrixTranspose(modelViewProjShadow));
+    XMStoreFloat4x4(&mConstantBufferData.world, XMMatrixTranspose(modelMtx));
     XMStoreFloat4x4(&mShadowConstantBufferData.worldViewProj, XMMatrixTranspose(modelViewProjShadow));
 
-    memcpy(mCBVDataBegin + mConstantBufferDataOffset + ConstantBufferSize * frameIndex, &mConstantBufferData, sizeof(mConstantBufferData));
+    memcpy(mCBVDataBegin + mConstantBufferDataOffset + (ConstantBufferSize + StaticConstantBufferSize) * frameIndex, &mConstantBufferData, sizeof(mConstantBufferData));
     memcpy(mCBVDataBegin + mShadowConstantBufferDataOffset + ShadowConstantBufferSize * frameIndex, &mShadowConstantBufferData, sizeof(mShadowConstantBufferData));
 }
 
@@ -353,23 +374,22 @@ void Model::updateDescriptors(ID3D12Device* device, ID3D12GraphicsCommandList* c
     cpuHandle.Offset(offset, srvCBVDescriptorSize);
     gpuHandle.Offset(offset, srvCBVDescriptorSize);
 
-    device->CopyDescriptorsSimple(1, cpuHandle, mSRVDescriptorStart, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    cmdList->SetGraphicsRootDescriptorTable(0, gpuHandle);
-    cpuHandle.Offset(1, srvCBVDescriptorSize);
-    gpuHandle.Offset(1, srvCBVDescriptorSize);
-    offset++;
+    auto bindAndOffset = [&](uint32_t rootParamIndex, uint32_t handleCount)
+    {
+        cmdList->SetGraphicsRootDescriptorTable(rootParamIndex, gpuHandle);
+        cpuHandle.Offset(handleCount, srvCBVDescriptorSize);
+        gpuHandle.Offset(handleCount, srvCBVDescriptorSize);
+        offset += handleCount;
+    };
 
-    device->CopyDescriptorsSimple(1, cpuHandle, mCBVDescriptorStart[frameIndex], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    cmdList->SetGraphicsRootDescriptorTable(1, gpuHandle);
-    cpuHandle.Offset(1, srvCBVDescriptorSize);
-    gpuHandle.Offset(1, srvCBVDescriptorSize);
-    offset++;
+    device->CopyDescriptorsSimple(1, cpuHandle, mSRVDescriptorStart, D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    bindAndOffset(0, 1);
+
+    device->CopyDescriptorsSimple(2, cpuHandle, mCBVDescriptorStart[frameIndex], D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
+    bindAndOffset(1, 2);
 
     device->CopyDescriptorsSimple(1, cpuHandle, mShadowMap->getSRVHandle(), D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV);
-    cmdList->SetGraphicsRootDescriptorTable(2, gpuHandle);
-    cpuHandle.Offset(1, srvCBVDescriptorSize);
-    gpuHandle.Offset(1, srvCBVDescriptorSize);
-    offset++;
+    bindAndOffset(2, 1);
 }
 
 }

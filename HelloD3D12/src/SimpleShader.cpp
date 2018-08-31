@@ -20,7 +20,7 @@ bool SimpleShader::prepare(ID3D12Device* device)
 
         CD3DX12_DESCRIPTOR_RANGE1 ranges[3];
         ranges[0].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
-        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 1, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
+        ranges[1].Init(D3D12_DESCRIPTOR_RANGE_TYPE_CBV, 2, 0, 0, D3D12_DESCRIPTOR_RANGE_FLAG_DATA_STATIC);
         ranges[2].Init(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 1);
 
         CD3DX12_ROOT_PARAMETER1 rootParameters[3];
@@ -89,7 +89,13 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "cbuffer SceneConstantBuffer : register(b0)\n                      \n"
             "{                                                                 \n"
             "   float4x4 gWorldViewProj;                                       \n"  
-            "   float4x4 gShadowWorldViewProj;                                 \n"
+            "   float4x4 gWorld;                                               \n"
+            "                                                                  \n"
+            "}                                                                 \n"
+            "cbuffer SceneStaticConstantBuffer : register(b1)\n                \n"
+            "{                                                                 \n"
+            "   float4x4 gShadowViewProj;                                      \n"
+            "   float3   gLightDir;                                            \n"
             "}                                                                 \n"
             "                                                                  \n"
             "struct PSInput                                                    \n"
@@ -110,8 +116,8 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "                                                                  \n"
             "	result.position = mul(float4(position, 1.0f), gWorldViewProj); \n"
             "	result.uv = uv;                                                \n"
-            "   result.normal = normal;                                        \n"
-            "   result.shadowPosition = mul(float4(position, 1.0f), gShadowWorldViewProj); \n                                                \n"
+            "   result.normal = mul(float4(normal, 0.f), gWorld);              \n"
+            "   result.shadowPosition = mul(mul(float4(position, 1.0f), gWorld), gShadowViewProj); \n                                                \n"
             "                                                                  \n"
             "	return result;                                                 \n"
             "}                                                                 \n"
@@ -122,10 +128,12 @@ bool SimpleShader::prepare(ID3D12Device* device)
             "    shadowPos.xyz /= shadowPos.w;                                 \n"
             "    float2 shadowCoord = 0.5f * shadowPos.xy + 0.5f;              \n"
             "    shadowCoord.y = 1.0f - shadowCoord.y;                         \n"
-            "    float shadowDepth = shadowPos.z - 0.0005f;                    \n"
+            "    float shadowDepth = shadowPos.z - 0.005f;                     \n"
             "    float shadowMapDepth = g_shadowtexture.Sample(g_sampler, shadowCoord);  \n"
             "    float shadowScale = shadowMapDepth > shadowDepth ? 1.f : 0.2f;\n"
-            "    return g_texture.Sample(g_sampler, input.uv) * shadowScale;   \n"
+            "    float3 wNormal = normalize(input.normal);                     \n"
+            "    float intensity = saturate(dot(wNormal, -gLightDir)) *shadowScale; \n"
+            "    return g_texture.Sample(g_sampler, input.uv) * intensity;     \n"
             "}                                                                 \n"
             ;
 

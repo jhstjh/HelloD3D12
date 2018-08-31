@@ -207,7 +207,7 @@ private:
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&dsvHeapDesc, IID_PPV_ARGS(&mDSVHeap)), false, "Failed to create DSV heap!\n");
 
         D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-        srvHeapDesc.NumDescriptors = 32;
+        srvHeapDesc.NumDescriptors = 64;
         srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
         srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_NONE;
         HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVHeap)), false, "Failed to create SRV CBV heap!\n");
@@ -215,7 +215,7 @@ private:
         for (UINT i = 0; i < FrameCount; i++)
         {
             D3D12_DESCRIPTOR_HEAP_DESC srvHeapDesc{};
-            srvHeapDesc.NumDescriptors = 32;
+            srvHeapDesc.NumDescriptors = 64;
             srvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_CBV_SRV_UAV;
             srvHeapDesc.Flags = D3D12_DESCRIPTOR_HEAP_FLAG_SHADER_VISIBLE;
             HR_ERROR_CHECK_CALL(mDevice->CreateDescriptorHeap(&srvHeapDesc, IID_PPV_ARGS(&mSRVCBVFrameHeap[i])), false, "Failed to create SRV CBV frame heap %u!\n", i);
@@ -274,7 +274,7 @@ private:
             HR_ERROR_CHECK_CALL(mDevice->CreateCommittedResource(
                 &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
                 D3D12_HEAP_FLAG_NONE,
-                &CD3DX12_RESOURCE_DESC::Buffer(1024 * 60),
+                &CD3DX12_RESOURCE_DESC::Buffer(1024 * 120),
                 D3D12_RESOURCE_STATE_GENERIC_READ,
                 nullptr,
                 IID_PPV_ARGS(&mConstantBuffer)), false, "Failed to create constant buffer!\n");
